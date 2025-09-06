@@ -1,0 +1,37 @@
+INFO: Scanner configuration file: /usr/local/sonar-scanner/conf/sonar-scanner.properties
+INFO: Project root configuration file: /home/runner/work/myapp/sonar-project.properties
+INFO: SonarScanner 5.0
+INFO: Java 17.0.8 Ubuntu
+INFO: OS: Linux 5.15.0-1051-azure amd64
+
+INFO: Load project settings for component key: myorg:myapp
+INFO: -------------  Scan myapp  -------------
+INFO: Base dir: /home/runner/work/myapp
+INFO: Source paths: src/main/java
+INFO: Test paths: src/test/java
+INFO: Source encoding: UTF-8, default locale: en_US
+INFO: Quality profile for java: Sonar way
+INFO: Quality gate status is IN PROGRESS
+
+INFO: Analyzing 120 source files
+INFO: Sensor JavaSquidSensor
+INFO: Sensor SurefireSensor
+INFO:  Tests run: 100, Failures: 0, Errors: 0, Skipped: 0
+INFO: Sensor JaCoCoTestCoverageSensor
+INFO:  Code coverage: 75.4%
+INFO: Sensor JavaSecuritySensor
+
+INFO: ------------------------------------------------------------------------
+INFO: EXECUTION SUCCESS
+INFO: ------------------------------------------------------------------------
+INFO: Quality Gate: FAILED
+INFO:  - Coverage is 75.4% (min is 80.0%)
+INFO:  - Vulnerabilities: 2 (max allowed is 0)
+INFO:  - Security Hotspots: 1
+INFO:  - Code Smells: 15
+INFO:  - Duplicated lines: 2.1% (max allowed is 3.0%)
+INFO: ------------------------------------------------------------------------
+
+INFO: More details at: https://sonarqube.mycompany.com/dashboard?id=myorg%3Amyapp
+INFO: Analysis total time: 42.563s
+INFO: ------------------------------------------------------------------------

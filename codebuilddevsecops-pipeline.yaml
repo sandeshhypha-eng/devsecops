@@ -1,0 +1,184 @@
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # -----------------------------------------------------
+      # Step 1: Checkout repository
+      # -----------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------
+      # Step 2: Setup JDK & Maven
+      # -----------------------------------------------------
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      # -----------------------------------------------------
+      # Step 4: SonarCloud Scan
+      # -----------------------------------------------------
+      - name: SonarCloud Scan
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          mvn sonar:sonar \
+            -Dsonar.projectKey=<your-project-key> \
+            -Dsonar.organization=<your-org-key> \
+            -Dsonar.host.url=https://sonarcloud.io \
+            -Dsonar.login=$SONAR_TOKEN
+
+      # -----------------------------------------------------
+      # Step 5: OWASP Dependency Check
+      # -----------------------------------------------------
+      - name: Run OWASP Dependency Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: "java-app"
+          path: "."
+          format: "JSON"
+          out: "dependency-check-report"
+
+      # -----------------------------------------------------
+      # Step 6: Evaluate Vulnerabilities (Fail if > 3)
+      # -----------------------------------------------------
+      - name: Check OWASP Vulnerability Count
+        id: vuln_check
+        run: |
+          VULN_COUNT=$(jq '.dependencies[].vulnerabilities | length' dependency-check-report/dependency-check-report.json | awk '{s+=$1} END {print s}')
+          echo "Total OWASP vulnerabilities found: $VULN_COUNT"
+          echo "owasp_vuln=$VULN_COUNT" >> $GITHUB_OUTPUT
+          if [ "$VULN_COUNT" -gt 3 ]; then
+            echo "❌ Too many OWASP vulnerabilities ($VULN_COUNT). Failing pipeline."
+            exit 1
+          fi
+
+      # -----------------------------------------------------
+      # Step 7: Build Application JAR
+      # -----------------------------------------------------
+      - name: Build with Maven
+        if: steps.vuln_check.outputs.owasp_vuln <= 3
+        run: mvn -B clean package -DskipTests
+
+      # -----------------------------------------------------
+      # Step 8: Build Docker Image
+      # -----------------------------------------------------
+      - name: Build Docker image
+        if: steps.vuln_check.outputs.owasp_vuln <= 3
+        run: |
+          docker build -t java-app:${{ github.sha }} .
+
+      # -----------------------------------------------------
+      # Step 9: Trivy Image Scan
+      # -----------------------------------------------------
+      - name: Trivy Scan Docker Image
+        if: steps.vuln_check.outputs.owasp_vuln <= 3
+        id: trivy_scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "java-app:${{ github.sha }}"
+          format: "json"
+          output: "trivy-report.json"
+
+      # -----------------------------------------------------
+      # Step 10: Evaluate Trivy Vulnerabilities (Fail if > 5)
+      # -----------------------------------------------------
+      - name: Check Trivy Vulnerability Count
+        if: steps.vuln_check.outputs.owasp_vuln <= 3
+        id: trivy_check
+        run: |
+          TRIVY_COUNT=$(jq '.Results[].Vulnerabilities | length' trivy-report.json | awk '{s+=$1} END {print s}')
+          echo "Total Trivy vulnerabilities found: $TRIVY_COUNT"
+          echo "trivy_vuln=$TRIVY_COUNT" >> $GITHUB_OUTPUT
+          if [ "$TRIVY_COUNT" -gt 5 ]; then
+            echo "❌ Too many Trivy vulnerabilities ($TRIVY_COUNT). Failing pipeline."
+            exit 1
+          fi
+
+      # -----------------------------------------------------
+      # Step 11: Configure AWS CLI (for ECR push)
+      # -----------------------------------------------------
+      - name: Configure AWS
+        if: steps.trivy_check.outputs.trivy_vuln <= 5
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-south-1  # change as per your ECR region
+
+      # -----------------------------------------------------
+      # Step 12: Authenticate Docker with ECR
+      # -----------------------------------------------------
+      - name: Login to Amazon ECR
+        if: steps.trivy_check.outputs.trivy_vuln <= 5
+        run: |
+          aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.ap-south-1.amazonaws.com
+
+      # -----------------------------------------------------
+      # Step 13: Tag & Push Docker Image to ECR
+      # -----------------------------------------------------
+      - name: Push Docker image to ECR
+        if: steps.trivy_check.outputs.trivy_vuln <= 5
+        run: |
+          ECR_REPO=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.ap-south-1.amazonaws.com/java-app
+          docker tag java-app:${{ github.sha }} $ECR_REPO:${{ github.sha }}
+          docker push $ECR_REPO:${{ github.sha }}
+
+      # -----------------------------------------------------
+      # Step 14: Send Email Notification
+      # -----------------------------------------------------
+      - name: Send Email
+        if: always()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          username: ${{ secrets.EMAIL_USER }}
+          password: ${{ secrets.EMAIL_PASS }}
+          subject: "CI Pipeline Result for ${{ github.repository }}"
+          to: "recipient@example.com"
+          from: "CI Pipeline <${{ secrets.EMAIL_USER }}>"
+          body: |
+            Hello Team,
+
+            ✅ Unit Tests and SonarCloud completed
+            ⚡ OWASP Vulnerabilities: ${{ steps.vuln_check.outputs.owasp_vuln }}
+            🔎 Trivy Vulnerabilities: ${{ steps.trivy_check.outputs.trivy_vuln }}
+
+            ${{ steps.trivy_check.outputs.trivy_vuln <= 5 && '✅ Image pushed to ECR' || '❌ Build stopped due to Trivy vulnerabilities' }}
+
+            Regards,
+            GitHub Actions Bot
+
+🔑 Required Secrets
+
+SONAR_TOKEN → SonarCloud token
+
+EMAIL_USER, EMAIL_PASS → SMTP creds (Gmail App Password works)
+
+AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_ACCOUNT_ID → for ECR push
+
+👉 Flow Summary:
+
+Runs tests + SonarCloud.
+
+OWASP check → if > 3 fail.
+
+Build JAR + Docker image.
+
+Trivy scan → if > 5 fail.
+
+Push to AWS ECR.
+
+Send email summary with vuln counts + result.

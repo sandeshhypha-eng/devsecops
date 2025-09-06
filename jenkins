@@ -1,0 +1,145 @@
+pipeline {
+    agent any
+
+    environment {
+        SONAR_TOKEN = credentials('SONAR_TOKEN')
+        AWS_ACCESS_KEY_ID = credentials('AWS_ACCESS_KEY_ID')
+        AWS_SECRET_ACCESS_KEY = credentials('AWS_SECRET_ACCESS_KEY')
+        AWS_ACCOUNT_ID = credentials('AWS_ACCOUNT_ID')
+        EMAIL_USER = credentials('EMAIL_USER')
+        EMAIL_PASS = credentials('EMAIL_PASS')
+        JAVA_HOME = tool name: 'JDK17', type: 'jdk'
+        PATH = "${tool 'Maven3'}/bin:${env.PATH}"
+    }
+
+    options {
+        timestamps()
+        ansiColor('xterm')
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('SonarCloud Scan') {
+            steps {
+                withEnv(["PATH+MAVEN=${tool 'Maven3'}/bin"]) {
+                    sh """
+                    mvn sonar:sonar \
+                        -Dsonar.projectKey=<your-project-key> \
+                        -Dsonar.organization=<your-org-key> \
+                        -Dsonar.host.url=https://sonarcloud.io \
+                        -Dsonar.login=${SONAR_TOKEN}
+                    """
+                }
+            }
+        }
+
+        stage('OWASP Dependency Check') {
+            steps {
+                sh """
+                dependency-check.sh --project "java-app" --scan . --format JSON --out dependency-check-report
+                """
+            }
+        }
+
+        stage('Evaluate OWASP Vulnerabilities') {
+            steps {
+                script {
+                    def vulnCount = sh(script: "jq '.dependencies[].vulnerabilities | length' dependency-check-report/dependency-check-report.json | awk '{s+=$1} END {print s}'", returnStdout: true).trim()
+                    echo "Total OWASP vulnerabilities: ${vulnCount}"
+                    if (vulnCount.toInteger() > 3) {
+                        error "❌ Too many OWASP vulnerabilities (${vulnCount}). Failing pipeline."
+                    }
+                }
+            }
+        }
+
+        stage('Build JAR') {
+            steps {
+                sh 'mvn clean package -DskipTests'
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    sh "docker build -t java-app:${env.GIT_COMMIT} ."
+                }
+            }
+        }
+
+        stage('Trivy Scan Docker Image') {
+            steps {
+                script {
+                    sh "trivy image --format json -o trivy-report.json java-app:${env.GIT_COMMIT}"
+                }
+            }
+        }
+
+        stage('Evaluate Trivy Vulnerabilities') {
+            steps {
+                script {
+                    def trivyCount = sh(script: "jq '.Results[].Vulnerabilities | length' trivy-report.json | awk '{s+=$1} END {print s}'", returnStdout: true).trim()
+                    echo "Total Trivy vulnerabilities: ${trivyCount}"
+                    if (trivyCount.toInteger() > 5) {
+                        error "❌ Too many Trivy vulnerabilities (${trivyCount}). Failing pipeline."
+                    }
+                }
+            }
+        }
+
+        stage('AWS ECR Login') {
+            steps {
+                withAWS(credentials: 'aws-creds', region: 'ap-south-1') {
+                    sh """
+                    aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.ap-south-1.amazonaws.com
+                    """
+                }
+            }
+        }
+
+        stage('Push Docker Image to ECR') {
+            steps {
+                script {
+                    def ecrRepo = "${AWS_ACCOUNT_ID}.dkr.ecr.ap-south-1.amazonaws.com/java-app"
+                    sh """
+                    docker tag java-app:${env.GIT_COMMIT} $ecrRepo:${env.GIT_COMMIT}
+                    docker push $ecrRepo:${env.GIT_COMMIT}
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                def owaspVuln = sh(script: "jq '.dependencies[].vulnerabilities | length' dependency-check-report/dependency-check-report.json | awk '{s+=$1} END {print s}'", returnStdout: true).trim()
+                def trivyVuln = sh(script: "jq '.Results[].Vulnerabilities | length' trivy-report.json | awk '{s+=$1} END {print s}'", returnStdout: true).trim()
+                def statusMsg = (trivyVuln.toInteger() <= 5) ? "✅ Image pushed to ECR" : "❌ Build stopped due to Trivy vulnerabilities"
+
+                emailext (
+                    subject: "CI Pipeline Result for ${env.JOB_NAME}",
+                    body: """
+                    Hello Team,
+
+                    ⚡ OWASP Vulnerabilities: ${owaspVuln}
+                    🔎 Trivy Vulnerabilities: ${trivyVuln}
+
+                    ${statusMsg}
+
+                    Regards,
+                    Jenkins CI Bot
+                    """,
+                    to: "recipient@example.com",
+                    from: "${EMAIL_USER}"
+                )
+            }
+        }
+    }
+}
+

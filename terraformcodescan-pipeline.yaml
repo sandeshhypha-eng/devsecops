@@ -1,0 +1,146 @@
+name: Terraform CI/CD with Approval & Notifications
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+
+    # 👇 Require Team Lead approval before apply
+    environment:
+      name: prod   # configure in repo Settings → Environments → prod
+                   # add Team Lead as required reviewer
+
+    steps:
+      # -----------------------------------------------------
+      # Step 1: Checkout code
+      # -----------------------------------------------------
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------
+      # Step 2: Setup Terraform
+      # -----------------------------------------------------
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.8.5
+
+      # -----------------------------------------------------
+      # Step 3: Install Terrascan
+      # -----------------------------------------------------
+      - name: Install Terrascan
+        run: |
+          curl -L https://github.com/tenable/terrascan/releases/download/v1.18.3/terrascan_1.18.3_Linux_x86_64.tar.gz -o terrascan.tar.gz
+          tar -xzf terrascan.tar.gz terrascan
+          sudo mv terrascan /usr/local/bin/
+
+      # -----------------------------------------------------
+      # Step 4: Run Terrascan
+      # -----------------------------------------------------
+      - name: Run Terrascan
+        run: |
+          terrascan scan -t aws -i terraform -o table || true
+
+      # -----------------------------------------------------
+      # Step 5: Terraform Init
+      # -----------------------------------------------------
+      - name: Terraform Init
+        run: terraform init
+
+      # -----------------------------------------------------
+      # Step 6: Terraform Validate
+      # -----------------------------------------------------
+      - name: Terraform Validate
+        run: terraform validate
+
+      # -----------------------------------------------------
+      # Step 7: Terraform Plan (Printed to Logs & File)
+      # -----------------------------------------------------
+      - name: Terraform Plan
+        run: terraform plan -no-color -out=tfplan | tee tfplan.log
+
+      # -----------------------------------------------------
+      # Step 8: Check for Destroy Actions
+      # -----------------------------------------------------
+      - name: Check for Destroy Actions
+        run: |
+          if grep -q "^-/" tfplan.log; then
+            echo "❌ Terraform plan contains destroy actions. Failing pipeline for safety!"
+            exit 1
+          else
+            echo "✅ No destroy actions found. Safe to continue."
+          fi
+
+      # -----------------------------------------------------
+      # Step 9: Cost Estimation with Infracost
+      # -----------------------------------------------------
+      - name: Setup Infracost
+        uses: infracost/actions/setup@v2
+        with:
+          api-key: ${{ secrets.INFRACOST_API_KEY }}
+
+      - name: Generate Cost Estimate
+        run: |
+          infracost breakdown --path=. \
+            --format table \
+            --out-file infracost-report.txt
+          cat infracost-report.txt
+
+      # Upload report as artifact so Team Lead can download
+      - name: Upload Cost Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: infracost-report
+          path: infracost-report.txt
+
+      # -----------------------------------------------------
+      # Step 10: Slack Notification (Plan + Cost Ready)
+      # -----------------------------------------------------
+      - name: Notify Slack
+        if: always()
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          payload: |
+            {
+              "text": "⚡ Terraform Plan & Cost Estimate Ready for *${{ github.repository }}*\n👉 <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Run>\n\n🚦 Team Lead approval required before *terraform apply*."
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      # -----------------------------------------------------
+      # Step 11: Email Notification (Plan + Cost Ready)
+      # -----------------------------------------------------
+      - name: Send Email to Team Lead
+        if: always()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          username: ${{ secrets.EMAIL_USER }}
+          password: ${{ secrets.EMAIL_PASS }}
+          subject: "Terraform Plan & Cost Estimate Ready - Approval Required"
+          to: "teamlead@example.com"
+          from: "Terraform CI/CD <${{ secrets.EMAIL_USER }}>"
+          body: |
+            Hello Team Lead,
+
+            ✅ Terraform Plan has completed successfully.
+            💰 Rough AWS Cost Estimate is attached as artifact (infracost-report.txt).
+            
+            👉 ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            🚦 Terraform Apply is waiting for your approval (GitHub Environment: prod).
+
+            Regards,
+            GitHub Actions Bot
+
+      # -----------------------------------------------------
+      # Step 12: Terraform Apply (Runs only after Team Lead approval)
+      # -----------------------------------------------------
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan

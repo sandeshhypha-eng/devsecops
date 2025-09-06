@@ -1,0 +1,28 @@
+Violation ID:  AC_AWS_0010
+Description :  Ensure S3 bucket has versioning enabled
+Category    :  AWS S3 Security
+Severity    :  MEDIUM
+File        :  main.tf
+Line        :  12
+
+Violation ID:  AC_AWS_0023
+Description :  Ensure security group does not allow ingress from 0.0.0.0/0 to port 22
+Category    :  AWS Security Groups
+Severity    :  HIGH
+File        :  security.tf
+Line        :  45
+
+Violation ID:  AC_AWS_0041
+Description :  Ensure RDS instance has storage encryption enabled
+Category    :  AWS RDS Security
+Severity    :  CRITICAL
+File        :  db.tf
+Line        :  20
+
+--------------------------------------------------------------------------------
+Summary:
+File/folder scanned     : ./terraform
+IaC Type                : terraform
+Policies Validated      : 445
+Violations Found        : 3
+--------------------------------------------------------------------------------

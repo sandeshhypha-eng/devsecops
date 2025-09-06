@@ -1,0 +1,47 @@
+{
+  "scanInfo": {
+    "engineVersion": "9.0.5",
+    "dataSource": ["NVD CVE", "OSS Index"]
+  },
+  "dependencies": [
+    {
+      "fileName": "log4j-core-2.14.1.jar",
+      "md5": "8d969eef6ecad3c29a3a629280e686cf",
+      "vulnerabilities": [
+        {
+          "name": "CVE-2021-44228",
+          "severity": "CRITICAL",
+          "cvssScore": 10.0,
+          "cwe": "CWE-502: Deserialization of Untrusted Data",
+          "description": "Apache Log4j2 JNDI features used in configuration, log messages, and parameters do not protect against attacker controlled LDAP and other JNDI endpoints.",
+          "references": [
+            {
+              "url": "https://nvd.nist.gov/vuln/detail/CVE-2021-44228"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "fileName": "guava-30.0-jre.jar",
+      "vulnerabilities": [
+        {
+          "name": "CVE-2020-8908",
+          "severity": "MEDIUM",
+          "cvssScore": 5.5,
+          "cwe": "CWE-770: Allocation of Resources Without Limits",
+          "description": "Guava before 30.1 allows DOS via AtomicDoubleArray.",
+          "references": [
+            {
+              "url": "https://nvd.nist.gov/vuln/detail/CVE-2020-8908"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "projectInfo": {
+    "name": "my-java-app",
+    "reportDate": "2025-09-06T12:30:00Z"
+  }
+}
