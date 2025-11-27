@@ -1,0 +1,67 @@
+name: Security scan - Python (Bandit + ZAP)
+
+# Purpose: This workflow installs Python deps, runs Bandit (static analyzer),
+# starts the Python sample app and runs OWASP ZAP baseline scan. It uploads Bandit and ZAP reports.
+#
+# High-level steps:
+# 1) Checkout source
+# 2) Setup Python runtime
+# 3) Install requirements and security tools (Bandit)
+# 4) Run Bandit static analysis and save a JSON report
+# 5) Start the Flask app in background (port 5000)
+# 6) Run OWASP ZAP baseline scanner in Docker targeting the app
+# 7) Upload Bandit and ZAP reports as workflow artifacts
+#
+# OWASP ZAP notes:
+# - The workflow uses the `owasp/zap2docker-stable` image and mounts the repository so reports are written
+#   to the workspace. The `host.docker.internal` entry maps to the GitHub runner's localhost so the container
+#   can reach the apps started on the runner.
+# - For more advanced use: use the ZAP Desktop or the ZAP API, set an API key, or integrate ZAP in the test pipeline.
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+jobs:
+  python-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies and Bandit
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r sample-python-app/requirements.txt
+          pip install bandit
+
+      - name: Run Bandit (static analysis)
+        run: |
+          # Run Bandit to produce a JSON report that will be uploaded as an artifact.
+          bandit -r sample-python-app -f json -o bandit-report.json || true
+
+      - name: Start Python app
+        run: |
+          # Start the vulnerable Flask app in the background so ZAP can scan it.
+          nohup python3 sample-python-app/app.py > python-app.log 2>&1 &
+          sleep 6
+
+      - name: OWASP ZAP baseline scan (Python)
+        run: |
+          docker run --rm -v ${{ github.workspace }}:/zap/wrk/:rw --add-host=host.docker.internal:host-gateway owasp/zap2docker-stable \
+            zap-baseline.py -t http://host.docker.internal:5000 -r zap-python-report.html -J zap-python-report.json || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-security-reports
+          path: |
+            bandit-report.json
+            zap-python-report.html
+            zap-python-report.json
