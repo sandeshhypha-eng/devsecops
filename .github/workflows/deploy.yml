@@ -1,6 +1,7 @@
 name: Deploy Full Stack App
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
