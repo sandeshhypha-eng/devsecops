@@ -6,7 +6,6 @@ on:
       - main
 
 jobs:
-
   deploy:
     runs-on: ubuntu-latest
 
@@ -20,171 +19,147 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
 
-      - name: Deploy Application
+      - name: Deploy to EC2
         run: |
+          ssh -o StrictHostKeyChecking=no ec2-user@${{ secrets.EC2_HOST }} << 'EOF'
 
-          ssh -o StrictHostKeyChecking=no ec2-user@${{ secrets.EC2_HOST }} << EOF
+            # Install Git
+            if ! command -v git >/dev/null 2>&1; then
+              sudo yum install -y git
+            fi
 
-          # ----------------------------
-          # Install Git
-          # ----------------------------
-          if ! command -v git >/dev/null 2>&1; then
-            sudo yum install -y git
-          fi
+            # Install NodeJS
+            if ! command -v node >/dev/null 2>&1; then
+              curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
+              sudo yum install -y nodejs
+            fi
 
-          # ----------------------------
-          # Install Node.js
-          # ----------------------------
-          if ! command -v node >/dev/null 2>&1; then
-            curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
-            sudo yum install -y nodejs
-          fi
+            # Install PM2
+            if ! command -v pm2 >/dev/null 2>&1; then
+              sudo npm install -g pm2
+            fi
 
-          # ----------------------------
-          # Install PM2
-          # ----------------------------
-          if ! command -v pm2 >/dev/null 2>&1; then
-            sudo npm install -g pm2
-          fi
+            # Install MongoDB
+            if ! command -v mongod >/dev/null 2>&1; then
 
-          # ----------------------------
-          # Install MongoDB
-          # ----------------------------
-          if ! command -v mongod >/dev/null 2>&1; then
+              sudo bash -c 'cat > /etc/yum.repos.d/mongodb-org-6.0.repo << "MONGOEOF"
+              [mongodb-org-6.0]
+              name=MongoDB Repository
+              baseurl=https://repo.mongodb.org/yum/amazon/2/mongodb-org/6.0/x86_64/
+              gpgcheck=1
+              enabled=1
+              gpgkey=https://www.mongodb.org/static/pgp/server-6.0.asc
+              MONGOEOF'
 
-            sudo tee /etc/yum.repos.d/mongodb-org-6.0.repo > /dev/null << MONGO
-[mongodb-org-6.0]
-name=MongoDB Repository
-baseurl=https://repo.mongodb.org/yum/amazon/2/mongodb-org/6.0/x86_64/
-gpgcheck=1
-enabled=1
-gpgkey=https://www.mongodb.org/static/pgp/server-6.0.asc
-MONGO
+              sudo yum install -y mongodb-org
+              sudo systemctl enable mongod
 
-            sudo yum install -y mongodb-org
-            sudo systemctl enable mongod
-          fi
+            fi
 
-          sudo systemctl start mongod
+            sudo systemctl start mongod
 
-          # ----------------------------
-          # Install Nginx
-          # ----------------------------
-          if ! command -v nginx >/dev/null 2>&1; then
-            sudo amazon-linux-extras install nginx1 -y || sudo yum install -y nginx
-            sudo systemctl enable nginx
-            sudo systemctl start nginx
-          fi
+            # Install Nginx
+            if ! command -v nginx >/dev/null 2>&1; then
+              sudo amazon-linux-extras install nginx1 -y || sudo yum install -y nginx
+              sudo systemctl enable nginx
+              sudo systemctl start nginx
+            fi
 
-          # ----------------------------
-          # Clone Repository
-          # ----------------------------
-          if [ ! -d "/home/ec2-user/Application-Code" ]; then
-            git clone https://github.com/YOUR_USERNAME/YOUR_REPO.git /home/ec2-user/Application-Code
-          fi
+            # Clone Repo
+            if [ ! -d "/home/ec2-user/Application-Code" ]; then
+              git clone https://github.com/YOUR_USERNAME/YOUR_REPO.git /home/ec2-user/Application-Code
+            fi
 
-          cd /home/ec2-user/Application-Code
+            cd /home/ec2-user/Application-Code
 
-          git pull origin main
+            git pull origin main
 
-          # ----------------------------
-          # Backend ENV
-          # ----------------------------
-          cat > backend/.env << BACKENDENV
-MONGODB_URI=mongodb://localhost:27017/mydb
-PORT=3500
-BACKENDENV
+            # Backend ENV
+            cat > backend/.env << 'BACKENDENV'
+            MONGODB_URI=mongodb://localhost:27017/mydb
+            PORT=3500
+            BACKENDENV
 
-          # ----------------------------
-          # Frontend ENV
-          # ----------------------------
-          cat > frontend/.env << FRONTENDENV
-REACT_APP_BACKEND_URL=http://${{ secrets.EC2_HOST }}/api
-FRONTENDENV
+            # Frontend ENV
+            cat > frontend/.env << 'FRONTENDENV'
+            REACT_APP_BACKEND_URL=http://${{ secrets.EC2_HOST }}/api
+            FRONTENDENV
 
-          # ----------------------------
-          # Backend Setup
-          # ----------------------------
-          cd backend
+            # Backend Setup
+            cd backend
 
-          npm install
+            npm install
 
-          pm2 delete backend || true
-          pm2 start index.js --name backend
+            pm2 delete backend || true
+            pm2 start index.js --name backend
 
-          cd ..
+            cd ..
 
-          # ----------------------------
-          # Frontend Setup
-          # ----------------------------
-          cd frontend
+            # Frontend Setup
+            cd frontend
 
-          npm install
-          npm run build
+            npm install
+            npm run build
 
-          if ! command -v serve >/dev/null 2>&1; then
-            sudo npm install -g serve
-          fi
+            if ! command -v serve >/dev/null 2>&1; then
+              sudo npm install -g serve
+            fi
 
-          pm2 delete frontend || true
-          pm2 start "serve -s build -l 3000" --name frontend
+            pm2 delete frontend || true
+            pm2 start "serve -s build -l 3000" --name frontend
 
-          pm2 save
+            pm2 save
 
-          cd ..
+            cd ..
 
-          # ----------------------------
-          # Nginx Config
-          # ----------------------------
-          sudo tee /etc/nginx/nginx.conf > /dev/null << NGINXCONF
-user nginx;
-worker_processes auto;
+            # Configure Nginx
+            sudo bash -c 'cat > /etc/nginx/nginx.conf << "NGINXEOF"
+            user nginx;
+            worker_processes auto;
 
-events {
-    worker_connections 1024;
-}
+            events {
+              worker_connections 1024;
+            }
 
-http {
+            http {
 
-    include /etc/nginx/mime.types;
-    default_type application/octet-stream;
+              include /etc/nginx/mime.types;
+              default_type application/octet-stream;
 
-    sendfile on;
+              sendfile on;
 
-    upstream backend {
-        server 127.0.0.1:3500;
-    }
+              upstream backend {
+                server 127.0.0.1:3500;
+              }
 
-    upstream frontend {
-        server 127.0.0.1:3000;
-    }
+              upstream frontend {
+                server 127.0.0.1:3000;
+              }
 
-    server {
+              server {
 
-        listen 80;
+                listen 80;
 
-        location /api/ {
-            proxy_pass http://backend/;
-            proxy_http_version 1.1;
+                location /api/ {
+                  proxy_pass http://backend/;
 
-            proxy_set_header Host \$host;
-            proxy_set_header Upgrade \$http_upgrade;
-            proxy_set_header Connection "upgrade";
-        }
+                  proxy_set_header Host \$host;
+                  proxy_set_header Upgrade \$http_upgrade;
+                  proxy_set_header Connection "upgrade";
+                }
 
-        location / {
-            proxy_pass http://frontend/;
-            proxy_http_version 1.1;
+                location / {
+                  proxy_pass http://frontend/;
 
-            proxy_set_header Host \$host;
-            proxy_set_header Upgrade \$http_upgrade;
-            proxy_set_header Connection "upgrade";
-        }
-    }
-}
-NGINXCONF
+                  proxy_set_header Host \$host;
+                  proxy_set_header Upgrade \$http_upgrade;
+                  proxy_set_header Connection "upgrade";
+                }
+              }
+            }
+            NGINXEOF'
 
-          sudo nginx -t
-          sudo systemctl restart nginx
+            sudo nginx -t
+            sudo systemctl restart nginx
 
           EOF
