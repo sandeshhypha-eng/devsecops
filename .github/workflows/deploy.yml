@@ -139,13 +139,13 @@ jobs:
             # ---------------------------------------------------------
             # Backend Environment Variables
             # ---------------------------------------------------------
-            echo "MONGO_CONN_STR=${{ secrets.MONGODB_URI }}" > $APP_DIR/backend/.env
+            echo "MONGO_CONN_STR=mongodb://localhost:27017/tasks" > $APP_DIR/backend/.env
             echo "PORT=3500" >> $APP_DIR/backend/.env
 
             # ---------------------------------------------------------
             # Frontend Environment Variables
             # ---------------------------------------------------------
-            echo "REACT_APP_BACKEND_URL=${{ secrets.REACT_APP_BACKEND_URL }}" > $APP_DIR/frontend/.env
+            echo "REACT_APP_BACKEND_URL=http://localhost/api/tasks" > $APP_DIR/frontend/.env
 
             echo "================================="
             echo "BACKEND DEPLOYMENT"
