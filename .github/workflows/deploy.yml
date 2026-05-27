@@ -91,7 +91,7 @@ baseurl=https://repo.mongodb.org/yum/amazon/2023/mongodb-org/7.0/x86_64/
 gpgcheck=1
 enabled=1
 gpgkey=https://pgp.mongodb.com/server-7.0.asc
-MONGOEOF
+          MONGOEOF
 
               sudo dnf install -y mongodb-org
 
@@ -118,7 +118,7 @@ MONGOEOF
             # Clone repository first time only
             # ---------------------------------------------------------
             if [ ! -d "$REPO_DIR" ]; then
-              git clone https://${{ secrets.GIT_PAT }}@github.com/YOUR_USERNAME/YOUR_REPO.git $REPO_DIR
+              git clone https://${{ secrets.GIT_PAT }}@github.com/${{ github.repository }}.git $REPO_DIR
             fi
 
             cd $REPO_DIR
@@ -231,7 +231,7 @@ http {
     }
   }
 }
-NGINXEOF
+          NGINXEOF
 
             sudo nginx -t
 
