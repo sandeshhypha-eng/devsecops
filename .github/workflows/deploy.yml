@@ -173,7 +173,7 @@ jobs:
 
             npm install
 
-            npm run build
+            NODE_OPTIONS=--openssl-legacy-provider npm run build
 
             # ---------------------------------------------------------
             # Install serve package
