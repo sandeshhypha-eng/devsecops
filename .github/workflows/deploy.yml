@@ -139,7 +139,7 @@ jobs:
             # ---------------------------------------------------------
             # Backend Environment Variables
             # ---------------------------------------------------------
-            echo "MONGODB_URI=${{ secrets.MONGODB_URI }}" > $APP_DIR/backend/.env
+            echo "MONGO_CONN_STR=${{ secrets.MONGODB_URI }}" > $APP_DIR/backend/.env
             echo "PORT=3500" >> $APP_DIR/backend/.env
 
             # ---------------------------------------------------------
@@ -173,7 +173,7 @@ jobs:
 
             npm install
 
-            npm run build
+            NODE_OPTIONS=--openssl-legacy-provider npm run build
 
             # ---------------------------------------------------------
             # Install serve package
