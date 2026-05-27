@@ -85,13 +85,13 @@ jobs:
             if ! command -v mongod >/dev/null 2>&1; then
 
               sudo tee /etc/yum.repos.d/mongodb-org-7.0.repo > /dev/null << 'MONGOEOF'
-[mongodb-org-7.0]
-name=MongoDB Repository
-baseurl=https://repo.mongodb.org/yum/amazon/2023/mongodb-org/7.0/x86_64/
-gpgcheck=1
-enabled=1
-gpgkey=https://pgp.mongodb.com/server-7.0.asc
-MONGOEOF
+          [mongodb-org-7.0]
+          name=MongoDB Repository
+          baseurl=https://repo.mongodb.org/yum/amazon/2023/mongodb-org/7.0/x86_64/
+          gpgcheck=1
+          enabled=1
+          gpgkey=https://pgp.mongodb.com/server-7.0.asc
+          MONGOEOF
 
               sudo dnf install -y mongodb-org
 
@@ -118,7 +118,7 @@ MONGOEOF
             # Clone repository first time only
             # ---------------------------------------------------------
             if [ ! -d "$REPO_DIR" ]; then
-              git clone https://${{ secrets.GIT_PAT }}@github.com/YOUR_USERNAME/YOUR_REPO.git $REPO_DIR
+              git clone https://${{ secrets.GIT_PAT }}@github.com/${{ github.repository }}.git $REPO_DIR
             fi
 
             cd $REPO_DIR
@@ -196,42 +196,42 @@ MONGOEOF
             # Configure nginx
             # ---------------------------------------------------------
             sudo tee /etc/nginx/nginx.conf > /dev/null << 'NGINXEOF'
-user nginx;
-worker_processes auto;
+          user nginx;
+          worker_processes auto;
 
-events {
-  worker_connections 1024;
-}
+          events {
+            worker_connections 1024;
+          }
 
-http {
+          http {
 
-  include /etc/nginx/mime.types;
-  default_type application/octet-stream;
+            include /etc/nginx/mime.types;
+            default_type application/octet-stream;
 
-  sendfile on;
+            sendfile on;
 
-  upstream backend {
-    server 127.0.0.1:3500;
-  }
+            upstream backend {
+              server 127.0.0.1:3500;
+            }
 
-  upstream frontend {
-    server 127.0.0.1:3000;
-  }
+            upstream frontend {
+              server 127.0.0.1:3000;
+            }
 
-  server {
+            server {
 
-    listen 80;
+              listen 80;
 
-    location /api/ {
-      proxy_pass http://backend/;
-    }
+              location /api/ {
+                proxy_pass http://backend/;
+              }
 
-    location / {
-      proxy_pass http://frontend/;
-    }
-  }
-}
-NGINXEOF
+              location / {
+                proxy_pass http://frontend/;
+              }
+            }
+          }
+          NGINXEOF
 
             sudo nginx -t
 
