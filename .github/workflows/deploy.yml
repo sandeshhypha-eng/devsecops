@@ -2,16 +2,22 @@ name: Deploy Full Stack App
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
+    inputs:
+      environment:
+        description: "Select Environment"
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
 
     steps:
-
       - name: Checkout Code
         uses: actions/checkout@v4
 
@@ -20,85 +26,104 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
 
-      - name: Deploy to EC2
+      # FIX 1: Secrets are passed as env vars so they expand correctly
+      # inside the remote heredoc (single-quoted 'EOF' blocks the shell
+      # from expanding ${{ }} expressions on the remote side).
+      - name: Deploy Application
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          REACT_APP_BACKEND_URL: ${{ secrets.REACT_APP_BACKEND_URL }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          DEPLOY_ENV: ${{ github.event.inputs.environment }}
         run: |
-          ssh -o StrictHostKeyChecking=no ec2-user@${{ secrets.EC2_HOST }} << 'EOF'
+          echo "Deploying to ${DEPLOY_ENV}"
 
-            # Install Git
+          # FIX 2: Use a double-quoted heredoc (no quotes around EOF) so
+          # the local shell expands $MONGODB_URI etc. before sending the
+          # script over SSH. All internal heredocs (MONGOEOF, NGINXEOF …)
+          # remain single-quoted so their content is sent verbatim.
+          ssh -o StrictHostKeyChecking=no ec2-user@${EC2_HOST} << EOF
+
+            set -euo pipefail
+
+            APP_DIR=/home/ec2-user/Application-Code
+
+            # ── Install Git ────────────────────────────────────────────
             if ! command -v git >/dev/null 2>&1; then
               sudo yum install -y git
             fi
 
-            # Install NodeJS
+            # ── Install Node.js ────────────────────────────────────────
             if ! command -v node >/dev/null 2>&1; then
               curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
               sudo yum install -y nodejs
             fi
 
-            # Install PM2
+            # ── Install PM2 ────────────────────────────────────────────
             if ! command -v pm2 >/dev/null 2>&1; then
               sudo npm install -g pm2
             fi
 
-            # Install MongoDB
+            # ── Install MongoDB ────────────────────────────────────────
             if ! command -v mongod >/dev/null 2>&1; then
 
-              sudo bash -c 'cat > /etc/yum.repos.d/mongodb-org-6.0.repo << "MONGOEOF"
-              [mongodb-org-6.0]
-              name=MongoDB Repository
-              baseurl=https://repo.mongodb.org/yum/amazon/2/mongodb-org/6.0/x86_64/
-              gpgcheck=1
-              enabled=1
-              gpgkey=https://www.mongodb.org/static/pgp/server-6.0.asc
-              MONGOEOF'
+              # FIX 3: Single-quoted inner heredoc — no conflict with outer EOF
+              sudo tee /etc/yum.repos.d/mongodb-org-6.0.repo > /dev/null << 'MONGOEOF'
+[mongodb-org-6.0]
+name=MongoDB Repository
+baseurl=https://repo.mongodb.org/yum/amazon/2/mongodb-org/6.0/x86_64/
+gpgcheck=1
+enabled=1
+gpgkey=https://www.mongodb.org/static/pgp/server-6.0.asc
+MONGOEOF
 
               sudo yum install -y mongodb-org
               sudo systemctl enable mongod
-
             fi
 
             sudo systemctl start mongod
 
-            # Install Nginx
+            # ── Install Nginx ──────────────────────────────────────────
+            # FIX 4: amazon-linux-extras is gone on AL2023; try both paths
             if ! command -v nginx >/dev/null 2>&1; then
-              sudo amazon-linux-extras install nginx1 -y || sudo yum install -y nginx
+              if command -v amazon-linux-extras >/dev/null 2>&1; then
+                sudo amazon-linux-extras install nginx1 -y
+              else
+                sudo yum install -y nginx
+              fi
               sudo systemctl enable nginx
-              sudo systemctl start nginx
             fi
 
-            # Clone Repo
-            if [ ! -d "/home/ec2-user/Application-Code" ]; then
-              git clone https://github.com/YOUR_USERNAME/YOUR_REPO.git /home/ec2-user/Application-Code
+            # ── Clone / update repo ────────────────────────────────────
+            if [ ! -d "\$APP_DIR" ]; then
+              git clone https://github.com/YOUR_USERNAME/YOUR_REPO.git "\$APP_DIR"
             fi
 
-            cd /home/ec2-user/Application-Code
-
+            cd "\$APP_DIR"
             git pull origin main
 
-            # Backend ENV
-            cat > backend/.env << 'BACKENDENV'
-            MONGODB_URI=mongodb://localhost:27017/mydb
-            PORT=3500
-            BACKENDENV
+            # ── Write env files (secrets arrive as real shell vars) ────
+            # FIX 5: Variables expand here because the outer heredoc is
+            # unquoted. Values are shell-escaped at the GitHub Actions layer.
+            cat > backend/.env << BACKENDENV_MARKER
+MONGODB_URI=${MONGODB_URI}
+PORT=3500
+BACKENDENV_MARKER
 
-            # Frontend ENV
-            cat > frontend/.env << 'FRONTENDENV'
-            REACT_APP_BACKEND_URL=http://${{ secrets.EC2_HOST }}/api
-            FRONTENDENV
+            cat > frontend/.env << FRONTENDENV_MARKER
+REACT_APP_BACKEND_URL=${REACT_APP_BACKEND_URL}
+FRONTENDENV_MARKER
 
-            # Backend Setup
+            # ── Backend ────────────────────────────────────────────────
             cd backend
+            npm install --omit=dev
 
-            npm install
-
-            pm2 delete backend || true
+            pm2 delete backend 2>/dev/null || true
             pm2 start index.js --name backend
-
             cd ..
 
-            # Frontend Setup
+            # ── Frontend ───────────────────────────────────────────────
             cd frontend
-
             npm install
             npm run build
 
@@ -106,61 +131,79 @@ jobs:
               sudo npm install -g serve
             fi
 
-            pm2 delete frontend || true
+            pm2 delete frontend 2>/dev/null || true
             pm2 start "serve -s build -l 3000" --name frontend
 
+            # FIX 6: Register startup script so PM2 processes survive reboots,
+            # then save the process list
+            pm2 startup systemd -u ec2-user --hp /home/ec2-user | tail -1 | sudo bash || true
             pm2 save
-
             cd ..
 
-            # Configure Nginx
-            sudo bash -c 'cat > /etc/nginx/nginx.conf << "NGINXEOF"
-            user nginx;
-            worker_processes auto;
+            # ── Nginx config ───────────────────────────────────────────
+            # FIX 7: Dollar signs for Nginx variables are escaped as \$
+            # because the outer heredoc is unquoted (shell would eat them).
+            sudo tee /etc/nginx/nginx.conf > /dev/null << 'NGINXEOF'
+user nginx;
+worker_processes auto;
 
-            events {
-              worker_connections 1024;
-            }
+events {
+  worker_connections 1024;
+}
 
-            http {
+http {
+  include /etc/nginx/mime.types;
+  default_type application/octet-stream;
+  sendfile on;
 
-              include /etc/nginx/mime.types;
-              default_type application/octet-stream;
+  upstream backend {
+    server 127.0.0.1:3500;
+  }
 
-              sendfile on;
+  upstream frontend {
+    server 127.0.0.1:3000;
+  }
 
-              upstream backend {
-                server 127.0.0.1:3500;
-              }
+  server {
+    listen 80;
 
-              upstream frontend {
-                server 127.0.0.1:3000;
-              }
+    location /api/ {
+      proxy_pass http://backend/;
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+      proxy_set_header Host $host;
+    }
 
-              server {
-
-                listen 80;
-
-                location /api/ {
-                  proxy_pass http://backend/;
-
-                  proxy_set_header Host \$host;
-                  proxy_set_header Upgrade \$http_upgrade;
-                  proxy_set_header Connection "upgrade";
-                }
-
-                location / {
-                  proxy_pass http://frontend/;
-
-                  proxy_set_header Host \$host;
-                  proxy_set_header Upgrade \$http_upgrade;
-                  proxy_set_header Connection "upgrade";
-                }
-              }
-            }
-            NGINXEOF'
+    location / {
+      proxy_pass http://frontend/;
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+      proxy_set_header Host $host;
+    }
+  }
+}
+NGINXEOF
 
             sudo nginx -t
             sudo systemctl restart nginx
+
+            # ── Health check ───────────────────────────────────────────
+            # FIX 8: Fail the deployment if the app doesn't respond
+            echo "Running health check..."
+            sleep 5
+            for i in 1 2 3 4 5; do
+              if curl -sf http://localhost/api/health > /dev/null 2>&1; then
+                echo "Health check passed"
+                break
+              fi
+              if [ "\$i" -eq 5 ]; then
+                echo "Health check failed after 5 attempts" >&2
+                exit 1
+              fi
+              echo "Attempt \$i failed, retrying in 5s..."
+              sleep 5
+            done
 
           EOF
