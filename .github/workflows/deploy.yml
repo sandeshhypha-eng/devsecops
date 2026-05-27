@@ -16,160 +16,144 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
 
-    # -------------------------------------------------------
-    # Dynamically loads GitHub Environment secrets
-    # -------------------------------------------------------
     environment: ${{ github.event.inputs.environment }}
 
     steps:
-
-      # -------------------------------------------------------
-      # Checkout source code to GitHub runner
-      # -------------------------------------------------------
+      # ---------------------------------------------------------
+      # Checkout source code
+      # ---------------------------------------------------------
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # -------------------------------------------------------
-      # Configure SSH access
-      # -------------------------------------------------------
+      # ---------------------------------------------------------
+      # Configure SSH
+      # ---------------------------------------------------------
       - name: Configure SSH
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
 
-      # -------------------------------------------------------
-      # Deploy application
-      # -------------------------------------------------------
-      - name: Deploy To EC2
+      # ---------------------------------------------------------
+      # Deploy Application
+      # ---------------------------------------------------------
+      - name: Deploy Application
         shell: bash
         run: |
+          ssh -o StrictHostKeyChecking=no ec2-user@${{ secrets.EC2_HOST }} << 'EOF'
 
-          echo "Deploying to environment:"
-          echo "${{ github.event.inputs.environment }}"
+            set -e
 
-          ssh -o StrictHostKeyChecking=no ec2-user@${{ secrets.EC2_HOST }} "
-
-            # -------------------------------------------------------
-            # Base paths
-            # -------------------------------------------------------
+            # ---------------------------------------------------------
+            # Directories
+            # ---------------------------------------------------------
             BASE_DIR=/home/ec2-user
-            REPO_DIR=\$BASE_DIR/repo
-            APP_DIR=\$REPO_DIR/Application-Code
+            REPO_DIR=$BASE_DIR/repo
+            APP_DIR=$REPO_DIR/Application-Code
 
-            echo '===================================='
-            echo 'PATH INFORMATION'
-            echo '===================================='
+            echo "================================="
+            echo "INSTALLING REQUIRED PACKAGES"
+            echo "================================="
 
-            echo BASE_DIR=\$BASE_DIR
-            echo REPO_DIR=\$REPO_DIR
-            echo APP_DIR=\$APP_DIR
+            sudo dnf update -y || true
 
-            # -------------------------------------------------------
+            # ---------------------------------------------------------
             # Install Git
-            # -------------------------------------------------------
+            # ---------------------------------------------------------
             if ! command -v git >/dev/null 2>&1; then
-              sudo yum install -y git
+              sudo dnf install -y git
             fi
 
-            # -------------------------------------------------------
+            # ---------------------------------------------------------
             # Install NodeJS
-            # -------------------------------------------------------
+            # ---------------------------------------------------------
             if ! command -v node >/dev/null 2>&1; then
               curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
-              sudo yum install -y nodejs
+              sudo dnf install -y nodejs
             fi
 
-            # -------------------------------------------------------
+            # ---------------------------------------------------------
             # Install PM2
-            # -------------------------------------------------------
+            # ---------------------------------------------------------
             if ! command -v pm2 >/dev/null 2>&1; then
               sudo npm install -g pm2
             fi
 
-            # -------------------------------------------------------
+            # ---------------------------------------------------------
             # Install MongoDB
-            # -------------------------------------------------------
+            # Amazon Linux 2023 Compatible
+            # ---------------------------------------------------------
             if ! command -v mongod >/dev/null 2>&1; then
 
-              echo '[mongodb-org-6.0]' | sudo tee /etc/yum.repos.d/mongodb-org-6.0.repo
-              echo 'name=MongoDB Repository' | sudo tee -a /etc/yum.repos.d/mongodb-org-6.0.repo
-              echo 'baseurl=https://repo.mongodb.org/yum/amazon/2/mongodb-org/6.0/x86_64/' | sudo tee -a /etc/yum.repos.d/mongodb-org-6.0.repo
-              echo 'gpgcheck=1' | sudo tee -a /etc/yum.repos.d/mongodb-org-6.0.repo
-              echo 'enabled=1' | sudo tee -a /etc/yum.repos.d/mongodb-org-6.0.repo
-              echo 'gpgkey=https://www.mongodb.org/static/pgp/server-6.0.asc' | sudo tee -a /etc/yum.repos.d/mongodb-org-6.0.repo
+              sudo tee /etc/yum.repos.d/mongodb-org-7.0.repo > /dev/null << 'MONGOEOF'
+[mongodb-org-7.0]
+name=MongoDB Repository
+baseurl=https://repo.mongodb.org/yum/amazon/2023/mongodb-org/7.0/x86_64/
+gpgcheck=1
+enabled=1
+gpgkey=https://pgp.mongodb.com/server-7.0.asc
+MONGOEOF
 
-              sudo yum install -y mongodb-org
+              sudo dnf install -y mongodb-org
 
               sudo systemctl enable mongod
             fi
 
             sudo systemctl start mongod
 
-            # -------------------------------------------------------
+            # ---------------------------------------------------------
             # Install Nginx
-            # -------------------------------------------------------
+            # ---------------------------------------------------------
             if ! command -v nginx >/dev/null 2>&1; then
-              sudo amazon-linux-extras install nginx1 -y || sudo yum install -y nginx
+              sudo dnf install -y nginx
 
               sudo systemctl enable nginx
               sudo systemctl start nginx
             fi
 
-            # -------------------------------------------------------
+            echo "================================="
+            echo "CLONING REPOSITORY"
+            echo "================================="
+
+            # ---------------------------------------------------------
             # Clone repository first time only
-            # -------------------------------------------------------
-            if [ ! -d \$REPO_DIR ]; then
-
-              git clone https://github.com/YOUR_USERNAME/YOUR_REPOSITORY.git \$REPO_DIR
-
+            # ---------------------------------------------------------
+            if [ ! -d "$REPO_DIR" ]; then
+              git clone https://${{ secrets.GIT_PAT }}@github.com/YOUR_USERNAME/YOUR_REPO.git $REPO_DIR
             fi
 
-            # -------------------------------------------------------
-            # Pull latest code
-            # -------------------------------------------------------
-            cd \$REPO_DIR || exit 1
+            cd $REPO_DIR
 
             git pull origin main
 
-            echo '===================================='
-            echo 'REPOSITORY CONTENT'
-            echo '===================================='
+            echo "================================="
+            echo "VERIFY PROJECT STRUCTURE"
+            echo "================================="
 
             pwd
 
             ls -la
+            ls -la $APP_DIR
+            ls -la $APP_DIR/backend
+            ls -la $APP_DIR/frontend
 
-            echo '===================================='
-            echo 'APPLICATION CONTENT'
-            echo '===================================='
+            # ---------------------------------------------------------
+            # Backend Environment Variables
+            # ---------------------------------------------------------
+            echo "MONGODB_URI=${{ secrets.MONGODB_URI }}" > $APP_DIR/backend/.env
+            echo "PORT=3500" >> $APP_DIR/backend/.env
 
-            ls -la \$APP_DIR
+            # ---------------------------------------------------------
+            # Frontend Environment Variables
+            # ---------------------------------------------------------
+            echo "REACT_APP_BACKEND_URL=${{ secrets.REACT_APP_BACKEND_URL }}" > $APP_DIR/frontend/.env
 
-            # -------------------------------------------------------
-            # Backend ENV
-            # -------------------------------------------------------
-            echo 'MONGODB_URI=${{ secrets.MONGODB_URI }}' > \$APP_DIR/backend/.env
-            echo 'PORT=3500' >> \$APP_DIR/backend/.env
+            echo "================================="
+            echo "BACKEND DEPLOYMENT"
+            echo "================================="
 
-            # -------------------------------------------------------
-            # Frontend ENV
-            # -------------------------------------------------------
-            echo 'REACT_APP_BACKEND_URL=${{ secrets.REACT_APP_BACKEND_URL }}' > \$APP_DIR/frontend/.env
+            cd $APP_DIR/backend
 
-            # =======================================================
-            # BACKEND DEPLOYMENT
-            # =======================================================
-
-            echo '===================================='
-            echo 'BACKEND DEPLOYMENT'
-            echo '===================================='
-
-            cd \$APP_DIR/backend || exit 1
-
-            echo 'CURRENT BACKEND PATH'
             pwd
-
-            echo 'BACKEND FILES'
             ls -la
 
             npm install
@@ -178,91 +162,83 @@ jobs:
 
             pm2 start index.js --name backend
 
-            # =======================================================
-            # FRONTEND DEPLOYMENT
-            # =======================================================
+            echo "================================="
+            echo "FRONTEND DEPLOYMENT"
+            echo "================================="
 
-            echo '===================================='
-            echo 'FRONTEND DEPLOYMENT'
-            echo '===================================='
+            cd $APP_DIR/frontend
 
-            cd \$APP_DIR/frontend || exit 1
-
-            echo 'CURRENT FRONTEND PATH'
             pwd
-
-            echo 'FRONTEND FILES'
             ls -la
 
             npm install
 
             npm run build
 
-            # -------------------------------------------------------
+            # ---------------------------------------------------------
             # Install serve package
-            # -------------------------------------------------------
+            # ---------------------------------------------------------
             if ! command -v serve >/dev/null 2>&1; then
               sudo npm install -g serve
             fi
 
             pm2 delete frontend || true
 
-            pm2 start 'serve -s build -l 3000' --name frontend
+            pm2 start "serve -s build -l 3000" --name frontend
 
             pm2 save
 
-            # =======================================================
-            # NGINX CONFIGURATION
-            # =======================================================
+            echo "================================="
+            echo "CONFIGURING NGINX"
+            echo "================================="
 
-            echo '===================================='
-            echo 'NGINX CONFIGURATION'
-            echo '===================================='
+            # ---------------------------------------------------------
+            # Configure nginx
+            # ---------------------------------------------------------
+            sudo tee /etc/nginx/nginx.conf > /dev/null << 'NGINXEOF'
+user nginx;
+worker_processes auto;
 
-            sudo rm -f /etc/nginx/nginx.conf
+events {
+  worker_connections 1024;
+}
 
-            echo 'user nginx;' | sudo tee -a /etc/nginx/nginx.conf
-            echo 'worker_processes auto;' | sudo tee -a /etc/nginx/nginx.conf
+http {
 
-            echo 'events {' | sudo tee -a /etc/nginx/nginx.conf
-            echo '  worker_connections 1024;' | sudo tee -a /etc/nginx/nginx.conf
-            echo '}' | sudo tee -a /etc/nginx/nginx.conf
+  include /etc/nginx/mime.types;
+  default_type application/octet-stream;
 
-            echo 'http {' | sudo tee -a /etc/nginx/nginx.conf
+  sendfile on;
 
-            echo '  include /etc/nginx/mime.types;' | sudo tee -a /etc/nginx/nginx.conf
-            echo '  default_type application/octet-stream;' | sudo tee -a /etc/nginx/nginx.conf
-            echo '  sendfile on;' | sudo tee -a /etc/nginx/nginx.conf
+  upstream backend {
+    server 127.0.0.1:3500;
+  }
 
-            echo '  upstream backend {' | sudo tee -a /etc/nginx/nginx.conf
-            echo '    server 127.0.0.1:3500;' | sudo tee -a /etc/nginx/nginx.conf
-            echo '  }' | sudo tee -a /etc/nginx/nginx.conf
+  upstream frontend {
+    server 127.0.0.1:3000;
+  }
 
-            echo '  upstream frontend {' | sudo tee -a /etc/nginx/nginx.conf
-            echo '    server 127.0.0.1:3000;' | sudo tee -a /etc/nginx/nginx.conf
-            echo '  }' | sudo tee -a /etc/nginx/nginx.conf
+  server {
 
-            echo '  server {' | sudo tee -a /etc/nginx/nginx.conf
-            echo '    listen 80;' | sudo tee -a /etc/nginx/nginx.conf
+    listen 80;
 
-            echo '    location /api/ {' | sudo tee -a /etc/nginx/nginx.conf
-            echo '      proxy_pass http://backend/;' | sudo tee -a /etc/nginx/nginx.conf
-            echo '    }' | sudo tee -a /etc/nginx/nginx.conf
+    location /api/ {
+      proxy_pass http://backend/;
+    }
 
-            echo '    location / {' | sudo tee -a /etc/nginx/nginx.conf
-            echo '      proxy_pass http://frontend/;' | sudo tee -a /etc/nginx/nginx.conf
-            echo '    }' | sudo tee -a /etc/nginx/nginx.conf
-
-            echo '  }' | sudo tee -a /etc/nginx/nginx.conf
-
-            echo '}' | sudo tee -a /etc/nginx/nginx.conf
+    location / {
+      proxy_pass http://frontend/;
+    }
+  }
+}
+NGINXEOF
 
             sudo nginx -t
 
             sudo systemctl restart nginx
 
-            echo '===================================='
-            echo 'DEPLOYMENT SUCCESSFUL'
-            echo '===================================='
+            echo "================================="
+            echo "DEPLOYMENT SUCCESSFUL"
+            echo "================================="
 
-          "
+          EOF
