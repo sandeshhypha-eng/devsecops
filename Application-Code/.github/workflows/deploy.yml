@@ -1,0 +1,91 @@
+name: Deploy to EC2
+
+on:
+  push:
+    branches:
+      - main  # Set your deployment branch
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up SSH key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
+
+      - name: Install and Start MongoDB on EC2
+        run: |
+          ssh -o StrictHostKeyChecking=no ec2-user@${{ secrets.EC2_HOST }} << 'EOF'
+            # ---------------------------------------------
+            # MongoDB Installation and Startup (Amazon Linux 2)
+            # ---------------------------------------------
+            # This step installs MongoDB if not present, enables it to start on boot, and starts the service.
+            if ! command -v mongod >/dev/null 2>&1; then
+              echo "MongoDB not found. Installing..."
+              sudo tee /etc/yum.repos.d/mongodb-org-6.0.repo > /dev/null <<EOL
+[mongodb-org-6.0]
+name=MongoDB Repository
+baseurl=https://repo.mongodb.org/yum/amazon/2/mongodb-org/6.0/x86_64/
+gpgcheck=1
+enabled=1
+gpgkey=https://www.mongodb.org/static/pgp/server-6.0.asc
+EOL
+              sudo yum install -y mongodb-org
+              sudo systemctl enable mongod
+              sudo systemctl start mongod
+              echo "MongoDB installed and started."
+            else
+              echo "MongoDB already installed. Starting service..."
+              sudo systemctl start mongod
+            fi
+          EOF
+
+      - name: Deploy Application and Services to EC2
+        run: |
+          ssh -o StrictHostKeyChecking=no ec2-user@${{ secrets.EC2_HOST }} << 'EOF'
+            # ---------------------------------------------
+            # Node.js, PM2, Serve, and App Deployment
+            # ---------------------------------------------
+            # Install Node.js, PM2, and serve if missing
+            command -v node >/dev/null 2>&1 || curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash - && sudo yum install -y nodejs
+            command -v pm2 >/dev/null 2>&1 || sudo npm install -g pm2
+            command -v serve >/dev/null 2>&1 || sudo npm install -g serve
+
+            # Clone repo if not present
+            [ -d /home/ec2-user/Application-Code ] || git clone https://github.com/your/repo.git /home/ec2-user/Application-Code
+
+            cd /home/ec2-user/Application-Code
+            git pull
+
+            # Update .env with EC2 public DNS for frontend
+            echo "REACT_APP_BACKEND_URL=http://${{ secrets.EC2_HOST }}:3500/api/tasks" > frontend/.env
+
+            # Backend: set MongoDB URI for local instance
+            echo "MONGODB_URI=mongodb://localhost:27017/yourdbname" > backend/.env
+            cd backend
+            npm install
+            pm2 restart backend || pm2 start index.js --name backend
+
+            # Frontend
+            cd ../frontend
+            npm install
+            npm run build
+            pm2 restart frontend || pm2 start "serve -s build -l 3000" --name frontend
+
+            # ---------------------------------------------
+            # Nginx Installation and Configuration
+            # ---------------------------------------------
+            # Install and configure Nginx as a reverse proxy
+            if ! command -v nginx >/dev/null 2>&1; then
+              sudo yum install -y nginx
+              sudo systemctl enable nginx
+              sudo systemctl start nginx
+            fi
+            sudo cp /home/ec2-user/Application-Code/nginx.conf /etc/nginx/nginx.conf
+            sudo systemctl reload nginx
+          EOF
