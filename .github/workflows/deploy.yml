@@ -1,4 +1,4 @@
-name: Deploy to EC2
+name: Deploy Full Stack App
 
 on:
   push:
@@ -7,12 +7,12 @@ on:
 
 jobs:
 
-  setup-mongodb:
-    name: Setup MongoDB
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Configure SSH
+
+      - name: Checkout Code
         uses: actions/checkout@v4
 
       - name: Start SSH Agent
@@ -20,159 +20,171 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
 
-      - name: Install MongoDB on EC2
+      - name: Deploy Application
         run: |
-          ssh -o StrictHostKeyChecking=no ec2-user@${{ secrets.EC2_HOST }} << 'EOF'
 
-            if ! command -v mongod >/dev/null 2>&1; then
-              echo "Installing MongoDB..."
+          ssh -o StrictHostKeyChecking=no ec2-user@${{ secrets.EC2_HOST }} << EOF
 
-              sudo tee /etc/yum.repos.d/mongodb-org-6.0.repo > /dev/null << 'EOL'
+          # ----------------------------
+          # Install Git
+          # ----------------------------
+          if ! command -v git >/dev/null 2>&1; then
+            sudo yum install -y git
+          fi
+
+          # ----------------------------
+          # Install Node.js
+          # ----------------------------
+          if ! command -v node >/dev/null 2>&1; then
+            curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
+            sudo yum install -y nodejs
+          fi
+
+          # ----------------------------
+          # Install PM2
+          # ----------------------------
+          if ! command -v pm2 >/dev/null 2>&1; then
+            sudo npm install -g pm2
+          fi
+
+          # ----------------------------
+          # Install MongoDB
+          # ----------------------------
+          if ! command -v mongod >/dev/null 2>&1; then
+
+            sudo tee /etc/yum.repos.d/mongodb-org-6.0.repo > /dev/null << MONGO
 [mongodb-org-6.0]
 name=MongoDB Repository
 baseurl=https://repo.mongodb.org/yum/amazon/2/mongodb-org/6.0/x86_64/
 gpgcheck=1
 enabled=1
 gpgkey=https://www.mongodb.org/static/pgp/server-6.0.asc
-EOL
+MONGO
 
-              sudo yum install -y mongodb-org
-              sudo systemctl enable mongod
-            fi
+            sudo yum install -y mongodb-org
+            sudo systemctl enable mongod
+          fi
 
-            sudo systemctl start mongod
-            sudo systemctl status mongod
+          sudo systemctl start mongod
 
-          EOF
+          # ----------------------------
+          # Install Nginx
+          # ----------------------------
+          if ! command -v nginx >/dev/null 2>&1; then
+            sudo amazon-linux-extras install nginx1 -y || sudo yum install -y nginx
+            sudo systemctl enable nginx
+            sudo systemctl start nginx
+          fi
 
-  deploy-backend:
-    name: Deploy Backend
-    runs-on: ubuntu-latest
-    needs: setup-mongodb
+          # ----------------------------
+          # Clone Repository
+          # ----------------------------
+          if [ ! -d "/home/ec2-user/Application-Code" ]; then
+            git clone https://github.com/YOUR_USERNAME/YOUR_REPO.git /home/ec2-user/Application-Code
+          fi
 
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+          cd /home/ec2-user/Application-Code
 
-      - name: Start SSH Agent
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
+          git pull origin main
 
-      - name: Deploy Backend to EC2
-        run: |
-          ssh -o StrictHostKeyChecking=no ec2-user@${{ secrets.EC2_HOST }} << 'EOF'
-
-            # Install Node.js
-            if ! command -v node >/dev/null 2>&1; then
-              curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
-              sudo yum install -y nodejs
-            fi
-
-            # Install PM2
-            if ! command -v pm2 >/dev/null 2>&1; then
-              sudo npm install -g pm2
-            fi
-
-            # Clone repository if missing
-            if [ ! -d "/home/ec2-user/Application-Code" ]; then
-              git clone https://github.com/your/repo.git /home/ec2-user/Application-Code
-            fi
-
-            cd /home/ec2-user/Application-Code
-
-            git pull origin main
-
-            # Backend ENV
-            cat > backend/.env << EOL
-MONGODB_URI=mongodb://localhost:27017/yourdbname
+          # ----------------------------
+          # Backend ENV
+          # ----------------------------
+          cat > backend/.env << BACKENDENV
+MONGODB_URI=mongodb://localhost:27017/mydb
 PORT=3500
-EOL
+BACKENDENV
 
-            # Backend Setup
-            cd backend
-            npm install
+          # ----------------------------
+          # Frontend ENV
+          # ----------------------------
+          cat > frontend/.env << FRONTENDENV
+REACT_APP_BACKEND_URL=http://${{ secrets.EC2_HOST }}/api
+FRONTENDENV
 
-            pm2 delete backend || true
-            pm2 start index.js --name backend
+          # ----------------------------
+          # Backend Setup
+          # ----------------------------
+          cd backend
 
-            pm2 save
+          npm install
 
-          EOF
+          pm2 delete backend || true
+          pm2 start index.js --name backend
 
-  deploy-frontend:
-    name: Deploy Frontend
-    runs-on: ubuntu-latest
-    needs: deploy-backend
+          cd ..
 
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+          # ----------------------------
+          # Frontend Setup
+          # ----------------------------
+          cd frontend
 
-      - name: Start SSH Agent
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
+          npm install
+          npm run build
 
-      - name: Deploy Frontend to EC2
-        run: |
-          ssh -o StrictHostKeyChecking=no ec2-user@${{ secrets.EC2_HOST }} << 'EOF'
+          if ! command -v serve >/dev/null 2>&1; then
+            sudo npm install -g serve
+          fi
 
-            # Install serve package
-            if ! command -v serve >/dev/null 2>&1; then
-              sudo npm install -g serve
-            fi
+          pm2 delete frontend || true
+          pm2 start "serve -s build -l 3000" --name frontend
 
-            cd /home/ec2-user/Application-Code
+          pm2 save
 
-            git pull origin main
+          cd ..
 
-            # Frontend ENV
-            cat > frontend/.env << EOL
-REACT_APP_BACKEND_URL=http://${{ secrets.EC2_HOST }}:3500/api/tasks
-EOL
+          # ----------------------------
+          # Nginx Config
+          # ----------------------------
+          sudo tee /etc/nginx/nginx.conf > /dev/null << NGINXCONF
+user nginx;
+worker_processes auto;
 
-            # Frontend Build
-            cd frontend
+events {
+    worker_connections 1024;
+}
 
-            npm install
-            npm run build
+http {
 
-            pm2 delete frontend || true
-            pm2 start "serve -s build -l 3000" --name frontend
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
 
-            pm2 save
+    sendfile on;
 
-          EOF
+    upstream backend {
+        server 127.0.0.1:3500;
+    }
 
-  setup-nginx:
-    name: Configure Nginx
-    runs-on: ubuntu-latest
-    needs: deploy-frontend
+    upstream frontend {
+        server 127.0.0.1:3000;
+    }
 
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+    server {
 
-      - name: Start SSH Agent
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
+        listen 80;
 
-      - name: Configure Nginx on EC2
-        run: |
-          ssh -o StrictHostKeyChecking=no ec2-user@${{ secrets.EC2_HOST }} << 'EOF'
+        location /api/ {
+            proxy_pass http://backend/;
+            proxy_http_version 1.1;
 
-            if ! command -v nginx >/dev/null 2>&1; then
-              sudo yum install -y nginx
-              sudo systemctl enable nginx
-              sudo systemctl start nginx
-            fi
+            proxy_set_header Host \$host;
+            proxy_set_header Upgrade \$http_upgrade;
+            proxy_set_header Connection "upgrade";
+        }
 
-            sudo cp /home/ec2-user/Application-Code/nginx.conf /etc/nginx/nginx.conf
+        location / {
+            proxy_pass http://frontend/;
+            proxy_http_version 1.1;
 
-            sudo nginx -t
+            proxy_set_header Host \$host;
+            proxy_set_header Upgrade \$http_upgrade;
+            proxy_set_header Connection "upgrade";
+        }
+    }
+}
+NGINXCONF
 
-            sudo systemctl reload nginx
+          sudo nginx -t
+          sudo systemctl restart nginx
 
           EOF
