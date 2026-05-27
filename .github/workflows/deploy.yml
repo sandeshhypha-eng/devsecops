@@ -1,15 +1,10 @@
-name: Full Stack EC2 Deployment Pipeline
+name: Full Stack EC2 Deployment
 
-# ---------------------------------------------------------
-# Trigger:
-# Manual deployment from GitHub Actions UI
-# Allows selecting environment dynamically
-# ---------------------------------------------------------
 on:
   workflow_dispatch:
     inputs:
       environment:
-        description: "Select Deployment Environment"
+        description: "Select Environment"
         required: true
         type: choice
         options:
@@ -19,297 +14,255 @@ on:
 
 jobs:
   deploy:
-    # ---------------------------------------------------------
-    # GitHub-hosted Ubuntu runner
-    # ---------------------------------------------------------
     runs-on: ubuntu-latest
 
-    # ---------------------------------------------------------
-    # Dynamically load GitHub Environment secrets
-    # Example:
-    # dev -> loads dev secrets
-    # prod -> loads prod secrets
-    # ---------------------------------------------------------
+    # -------------------------------------------------------
+    # Dynamically loads GitHub Environment secrets
+    # -------------------------------------------------------
     environment: ${{ github.event.inputs.environment }}
 
     steps:
 
-      # ---------------------------------------------------------
-      # Step 1:
-      # Checkout repository code into GitHub runner
-      # Needed because workflow runs outside EC2 first
-      # ---------------------------------------------------------
+      # -------------------------------------------------------
+      # Checkout source code to GitHub runner
+      # -------------------------------------------------------
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # ---------------------------------------------------------
-      # Step 2:
-      # Start SSH agent and inject private key securely
-      # So GitHub Actions can SSH into EC2
-      # ---------------------------------------------------------
-      - name: Configure SSH Access
+      # -------------------------------------------------------
+      # Configure SSH access
+      # -------------------------------------------------------
+      - name: Configure SSH
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
 
-      # ---------------------------------------------------------
-      # Step 3:
-      # Main deployment step
-      # SSH into EC2 and execute deployment commands
-      # ---------------------------------------------------------
-      - name: Deploy Application To EC2
+      # -------------------------------------------------------
+      # Deploy application
+      # -------------------------------------------------------
+      - name: Deploy To EC2
         shell: bash
         run: |
 
-          echo "Starting deployment to:"
+          echo "Deploying to environment:"
           echo "${{ github.event.inputs.environment }}"
 
-          # ---------------------------------------------------------
-          # SSH into EC2
-          # StrictHostKeyChecking disabled for automation
-          # ---------------------------------------------------------
           ssh -o StrictHostKeyChecking=no ec2-user@${{ secrets.EC2_HOST }} "
 
-          # ---------------------------------------------------------
-          # Application base directory
-          # ---------------------------------------------------------
-          APP_BASE=/home/ec2-user
+            # -------------------------------------------------------
+            # Base paths
+            # -------------------------------------------------------
+            BASE_DIR=/home/ec2-user
+            REPO_DIR=\$BASE_DIR/repo
+            APP_DIR=\$REPO_DIR/Application-Code
 
-          # ---------------------------------------------------------
-          # Repository clone directory
-          # ---------------------------------------------------------
-          REPO_DIR=\$APP_BASE/repo
+            echo '===================================='
+            echo 'PATH INFORMATION'
+            echo '===================================='
 
-          # ---------------------------------------------------------
-          # Actual application folder
-          # Your repo contains Application-Code folder
-          # ---------------------------------------------------------
-          APP_DIR=\$REPO_DIR/Application-Code
+            echo BASE_DIR=\$BASE_DIR
+            echo REPO_DIR=\$REPO_DIR
+            echo APP_DIR=\$APP_DIR
 
-          echo 'Using app directory:'
-          echo \$APP_DIR
+            # -------------------------------------------------------
+            # Install Git
+            # -------------------------------------------------------
+            if ! command -v git >/dev/null 2>&1; then
+              sudo yum install -y git
+            fi
 
-          # ---------------------------------------------------------
-          # Install Git if missing
-          # Needed for git clone/pull
-          # ---------------------------------------------------------
-          if ! command -v git >/dev/null 2>&1; then
-            sudo yum install -y git
-          fi
+            # -------------------------------------------------------
+            # Install NodeJS
+            # -------------------------------------------------------
+            if ! command -v node >/dev/null 2>&1; then
+              curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
+              sudo yum install -y nodejs
+            fi
 
-          # ---------------------------------------------------------
-          # Install Node.js if missing
-          # Backend + frontend both require Node
-          # ---------------------------------------------------------
-          if ! command -v node >/dev/null 2>&1; then
-            curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
-            sudo yum install -y nodejs
-          fi
+            # -------------------------------------------------------
+            # Install PM2
+            # -------------------------------------------------------
+            if ! command -v pm2 >/dev/null 2>&1; then
+              sudo npm install -g pm2
+            fi
 
-          # ---------------------------------------------------------
-          # Install PM2 process manager
-          # Keeps Node apps alive after SSH disconnect
-          # Auto restart on crashes/reboots
-          # ---------------------------------------------------------
-          if ! command -v pm2 >/dev/null 2>&1; then
-            sudo npm install -g pm2
-          fi
+            # -------------------------------------------------------
+            # Install MongoDB
+            # -------------------------------------------------------
+            if ! command -v mongod >/dev/null 2>&1; then
 
-          # ---------------------------------------------------------
-          # Install MongoDB if missing
-          # Only installs first time
-          # ---------------------------------------------------------
-          if ! command -v mongod >/dev/null 2>&1; then
+              echo '[mongodb-org-6.0]' | sudo tee /etc/yum.repos.d/mongodb-org-6.0.repo
+              echo 'name=MongoDB Repository' | sudo tee -a /etc/yum.repos.d/mongodb-org-6.0.repo
+              echo 'baseurl=https://repo.mongodb.org/yum/amazon/2/mongodb-org/6.0/x86_64/' | sudo tee -a /etc/yum.repos.d/mongodb-org-6.0.repo
+              echo 'gpgcheck=1' | sudo tee -a /etc/yum.repos.d/mongodb-org-6.0.repo
+              echo 'enabled=1' | sudo tee -a /etc/yum.repos.d/mongodb-org-6.0.repo
+              echo 'gpgkey=https://www.mongodb.org/static/pgp/server-6.0.asc' | sudo tee -a /etc/yum.repos.d/mongodb-org-6.0.repo
 
-            echo '[mongodb-org-6.0]' | sudo tee /etc/yum.repos.d/mongodb-org-6.0.repo
-            echo 'name=MongoDB Repository' | sudo tee -a /etc/yum.repos.d/mongodb-org-6.0.repo
-            echo 'baseurl=https://repo.mongodb.org/yum/amazon/2/mongodb-org/6.0/x86_64/' | sudo tee -a /etc/yum.repos.d/mongodb-org-6.0.repo
-            echo 'gpgcheck=1' | sudo tee -a /etc/yum.repos.d/mongodb-org-6.0.repo
-            echo 'enabled=1' | sudo tee -a /etc/yum.repos.d/mongodb-org-6.0.repo
-            echo 'gpgkey=https://www.mongodb.org/static/pgp/server-6.0.asc' | sudo tee -a /etc/yum.repos.d/mongodb-org-6.0.repo
+              sudo yum install -y mongodb-org
 
-            sudo yum install -y mongodb-org
+              sudo systemctl enable mongod
+            fi
 
-            sudo systemctl enable mongod
-          fi
+            sudo systemctl start mongod
 
-          # ---------------------------------------------------------
-          # Ensure MongoDB is running
-          # ---------------------------------------------------------
-          sudo systemctl start mongod
+            # -------------------------------------------------------
+            # Install Nginx
+            # -------------------------------------------------------
+            if ! command -v nginx >/dev/null 2>&1; then
+              sudo amazon-linux-extras install nginx1 -y || sudo yum install -y nginx
 
-          # ---------------------------------------------------------
-          # Install Nginx if missing
-          # Used as reverse proxy
-          # ---------------------------------------------------------
-          if ! command -v nginx >/dev/null 2>&1; then
-            sudo amazon-linux-extras install nginx1 -y || sudo yum install -y nginx
+              sudo systemctl enable nginx
+              sudo systemctl start nginx
+            fi
 
-            sudo systemctl enable nginx
-            sudo systemctl start nginx
-          fi
+            # -------------------------------------------------------
+            # Clone repository first time only
+            # -------------------------------------------------------
+            if [ ! -d \$REPO_DIR ]; then
 
-          # ---------------------------------------------------------
-          # Clone repository only first time
-          # ---------------------------------------------------------
-          if [ ! -d \$REPO_DIR ]; then
-            git clone https://github.com/YOUR_USERNAME/YOUR_REPOSITORY.git \$REPO_DIR
-          fi
+              git clone https://github.com/YOUR_USERNAME/YOUR_REPOSITORY.git \$REPO_DIR
 
-          # ---------------------------------------------------------
-          # Move into repo
-          # ---------------------------------------------------------
-          cd \$REPO_DIR
+            fi
 
-          # ---------------------------------------------------------
-          # Pull latest code
-          # ---------------------------------------------------------
-          git pull origin main
+            # -------------------------------------------------------
+            # Pull latest code
+            # -------------------------------------------------------
+            cd \$REPO_DIR || exit 1
 
-          # ---------------------------------------------------------
-          # Move into application folder
-          # ---------------------------------------------------------
-          cd \$APP_DIR
+            git pull origin main
 
-          # ---------------------------------------------------------
-          # Create backend environment variables
-          # Secrets come from GitHub Environments
-          # ---------------------------------------------------------
-          echo 'MONGODB_URI=${{ secrets.MONGODB_URI }}' > backend/.env
-          echo 'PORT=3500' >> backend/.env
+            echo '===================================='
+            echo 'REPOSITORY CONTENT'
+            echo '===================================='
 
-          # ---------------------------------------------------------
-          # Create frontend environment variables
-          # ---------------------------------------------------------
-          echo 'REACT_APP_BACKEND_URL=${{ secrets.REACT_APP_BACKEND_URL }}' > frontend/.env
+            pwd
 
-          # =========================================================
-          # BACKEND DEPLOYMENT
-          # =========================================================
+            ls -la
 
-          cd backend
+            echo '===================================='
+            echo 'APPLICATION CONTENT'
+            echo '===================================='
 
-          # ---------------------------------------------------------
-          # Install backend dependencies
-          # ---------------------------------------------------------
-          npm install
+            ls -la \$APP_DIR
 
-          # ---------------------------------------------------------
-          # Remove old PM2 backend process if exists
-          # Prevent duplicate processes
-          # ---------------------------------------------------------
-          pm2 delete backend || true
+            # -------------------------------------------------------
+            # Backend ENV
+            # -------------------------------------------------------
+            echo 'MONGODB_URI=${{ secrets.MONGODB_URI }}' > \$APP_DIR/backend/.env
+            echo 'PORT=3500' >> \$APP_DIR/backend/.env
 
-          # ---------------------------------------------------------
-          # Start backend server
-          # index.js is your backend entrypoint
-          # ---------------------------------------------------------
-          pm2 start ./index.js --name backend
+            # -------------------------------------------------------
+            # Frontend ENV
+            # -------------------------------------------------------
+            echo 'REACT_APP_BACKEND_URL=${{ secrets.REACT_APP_BACKEND_URL }}' > \$APP_DIR/frontend/.env
 
-          cd ..
+            # =======================================================
+            # BACKEND DEPLOYMENT
+            # =======================================================
 
-          # =========================================================
-          # FRONTEND DEPLOYMENT
-          # =========================================================
+            echo '===================================='
+            echo 'BACKEND DEPLOYMENT'
+            echo '===================================='
 
-          cd frontend
+            cd \$APP_DIR/backend || exit 1
 
-          # ---------------------------------------------------------
-          # Install frontend dependencies
-          # ---------------------------------------------------------
-          npm install
+            echo 'CURRENT BACKEND PATH'
+            pwd
 
-          # ---------------------------------------------------------
-          # Build React production files
-          # ---------------------------------------------------------
-          npm run build
+            echo 'BACKEND FILES'
+            ls -la
 
-          # ---------------------------------------------------------
-          # Install serve package if missing
-          # Used to serve React static build
-          # ---------------------------------------------------------
-          if ! command -v serve >/dev/null 2>&1; then
-            sudo npm install -g serve
-          fi
+            npm install
 
-          # ---------------------------------------------------------
-          # Remove old frontend process
-          # ---------------------------------------------------------
-          pm2 delete frontend || true
+            pm2 delete backend || true
 
-          # ---------------------------------------------------------
-          # Start frontend on port 3000
-          # ---------------------------------------------------------
-          pm2 start 'serve -s build -l 3000' --name frontend
+            pm2 start index.js --name backend
 
-          # ---------------------------------------------------------
-          # Save PM2 process list
-          # Auto starts after EC2 reboot
-          # ---------------------------------------------------------
-          pm2 save
+            # =======================================================
+            # FRONTEND DEPLOYMENT
+            # =======================================================
 
-          cd ..
+            echo '===================================='
+            echo 'FRONTEND DEPLOYMENT'
+            echo '===================================='
 
-          # =========================================================
-          # NGINX CONFIGURATION
-          # =========================================================
+            cd \$APP_DIR/frontend || exit 1
 
-          # ---------------------------------------------------------
-          # Remove existing nginx config
-          # ---------------------------------------------------------
-          sudo rm -f /etc/nginx/nginx.conf
+            echo 'CURRENT FRONTEND PATH'
+            pwd
 
-          # ---------------------------------------------------------
-          # Create nginx configuration
-          # Reverse proxy:
-          # /api -> backend
-          # / -> frontend
-          # ---------------------------------------------------------
-          echo 'user nginx;' | sudo tee -a /etc/nginx/nginx.conf
-          echo 'worker_processes auto;' | sudo tee -a /etc/nginx/nginx.conf
+            echo 'FRONTEND FILES'
+            ls -la
 
-          echo 'events {' | sudo tee -a /etc/nginx/nginx.conf
-          echo '  worker_connections 1024;' | sudo tee -a /etc/nginx/nginx.conf
-          echo '}' | sudo tee -a /etc/nginx/nginx.conf
+            npm install
 
-          echo 'http {' | sudo tee -a /etc/nginx/nginx.conf
-          echo '  include /etc/nginx/mime.types;' | sudo tee -a /etc/nginx/nginx.conf
-          echo '  default_type application/octet-stream;' | sudo tee -a /etc/nginx/nginx.conf
-          echo '  sendfile on;' | sudo tee -a /etc/nginx/nginx.conf
+            npm run build
 
-          echo '  upstream backend {' | sudo tee -a /etc/nginx/nginx.conf
-          echo '    server 127.0.0.1:3500;' | sudo tee -a /etc/nginx/nginx.conf
-          echo '  }' | sudo tee -a /etc/nginx/nginx.conf
+            # -------------------------------------------------------
+            # Install serve package
+            # -------------------------------------------------------
+            if ! command -v serve >/dev/null 2>&1; then
+              sudo npm install -g serve
+            fi
 
-          echo '  upstream frontend {' | sudo tee -a /etc/nginx/nginx.conf
-          echo '    server 127.0.0.1:3000;' | sudo tee -a /etc/nginx/nginx.conf
-          echo '  }' | sudo tee -a /etc/nginx/nginx.conf
+            pm2 delete frontend || true
 
-          echo '  server {' | sudo tee -a /etc/nginx/nginx.conf
-          echo '    listen 80;' | sudo tee -a /etc/nginx/nginx.conf
+            pm2 start 'serve -s build -l 3000' --name frontend
 
-          echo '    location /api/ {' | sudo tee -a /etc/nginx/nginx.conf
-          echo '      proxy_pass http://backend/;' | sudo tee -a /etc/nginx/nginx.conf
-          echo '    }' | sudo tee -a /etc/nginx/nginx.conf
+            pm2 save
 
-          echo '    location / {' | sudo tee -a /etc/nginx/nginx.conf
-          echo '      proxy_pass http://frontend/;' | sudo tee -a /etc/nginx/nginx.conf
-          echo '    }' | sudo tee -a /etc/nginx/nginx.conf
+            # =======================================================
+            # NGINX CONFIGURATION
+            # =======================================================
 
-          echo '  }' | sudo tee -a /etc/nginx/nginx.conf
-          echo '}' | sudo tee -a /etc/nginx/nginx.conf
+            echo '===================================='
+            echo 'NGINX CONFIGURATION'
+            echo '===================================='
 
-          # ---------------------------------------------------------
-          # Validate nginx config before restart
-          # Prevents broken deployment
-          # ---------------------------------------------------------
-          sudo nginx -t
+            sudo rm -f /etc/nginx/nginx.conf
 
-          # ---------------------------------------------------------
-          # Restart nginx
-          # ---------------------------------------------------------
-          sudo systemctl restart nginx
+            echo 'user nginx;' | sudo tee -a /etc/nginx/nginx.conf
+            echo 'worker_processes auto;' | sudo tee -a /etc/nginx/nginx.conf
 
-          echo 'Deployment completed successfully'
+            echo 'events {' | sudo tee -a /etc/nginx/nginx.conf
+            echo '  worker_connections 1024;' | sudo tee -a /etc/nginx/nginx.conf
+            echo '}' | sudo tee -a /etc/nginx/nginx.conf
+
+            echo 'http {' | sudo tee -a /etc/nginx/nginx.conf
+
+            echo '  include /etc/nginx/mime.types;' | sudo tee -a /etc/nginx/nginx.conf
+            echo '  default_type application/octet-stream;' | sudo tee -a /etc/nginx/nginx.conf
+            echo '  sendfile on;' | sudo tee -a /etc/nginx/nginx.conf
+
+            echo '  upstream backend {' | sudo tee -a /etc/nginx/nginx.conf
+            echo '    server 127.0.0.1:3500;' | sudo tee -a /etc/nginx/nginx.conf
+            echo '  }' | sudo tee -a /etc/nginx/nginx.conf
+
+            echo '  upstream frontend {' | sudo tee -a /etc/nginx/nginx.conf
+            echo '    server 127.0.0.1:3000;' | sudo tee -a /etc/nginx/nginx.conf
+            echo '  }' | sudo tee -a /etc/nginx/nginx.conf
+
+            echo '  server {' | sudo tee -a /etc/nginx/nginx.conf
+            echo '    listen 80;' | sudo tee -a /etc/nginx/nginx.conf
+
+            echo '    location /api/ {' | sudo tee -a /etc/nginx/nginx.conf
+            echo '      proxy_pass http://backend/;' | sudo tee -a /etc/nginx/nginx.conf
+            echo '    }' | sudo tee -a /etc/nginx/nginx.conf
+
+            echo '    location / {' | sudo tee -a /etc/nginx/nginx.conf
+            echo '      proxy_pass http://frontend/;' | sudo tee -a /etc/nginx/nginx.conf
+            echo '    }' | sudo tee -a /etc/nginx/nginx.conf
+
+            echo '  }' | sudo tee -a /etc/nginx/nginx.conf
+
+            echo '}' | sudo tee -a /etc/nginx/nginx.conf
+
+            sudo nginx -t
+
+            sudo systemctl restart nginx
+
+            echo '===================================='
+            echo 'DEPLOYMENT SUCCESSFUL'
+            echo '===================================='
 
           "
