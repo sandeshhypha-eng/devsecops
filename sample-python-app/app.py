@@ -80,3 +80,6 @@ if __name__ == '__main__':
     API_KEY = "APIKEY-12345-SECRET"
     print('Starting vulnerable Flask app (port 5000)')
     app.run(host='0.0.0.0', port=5000)
+ 
+
+ API_KEY =  JFEJHLGEFJG234231HJJBH423423H23
