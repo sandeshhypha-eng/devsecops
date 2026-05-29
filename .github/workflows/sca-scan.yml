@@ -1,0 +1,231 @@
+name: SCA Scan - Dependency Vulnerability Analysis
+
+on:
+  push:
+    branches: [ main, develop, 'feature*' ]
+    paths:
+      - 'Application-Code/backend/package.json'
+      - 'Application-Code/backend/package-lock.json'
+      - 'Application-Code/frontend/package.json'
+      - 'Application-Code/frontend/package-lock.json'
+      - '.github/workflows/sca-scan.yml'
+  pull_request:
+    branches: [ main, develop, 'feature*' ]
+    paths:
+      - 'Application-Code/backend/package.json'
+      - 'Application-Code/backend/package-lock.json'
+      - 'Application-Code/frontend/package.json'
+      - 'Application-Code/frontend/package-lock.json'
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  # ====================================================================
+  # NPM AUDIT SCAN
+  # ====================================================================
+  npm-audit:
+    name: NPM Audit - Dependency Scan
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Backend
+            path: Application-Code/backend
+          - name: Frontend
+            path: Application-Code/frontend
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: '${{ matrix.path }}/package-lock.json'
+
+      - name: NPM Audit - ${{ matrix.name }}
+        working-directory: ${{ matrix.path }}
+        run: |
+          echo "========================================="
+          echo "Running NPM Audit on ${{ matrix.name }}"
+          echo "========================================="
+          npm audit --audit-level=moderate || EXIT_CODE=$?
+          
+          if [ "${EXIT_CODE}" != "" ] && [ "${EXIT_CODE}" != "0" ]; then
+            echo "⚠️ Vulnerabilities found in ${{ matrix.name }}"
+            npm audit
+            exit 1
+          fi
+
+      - name: Generate NPM Audit Report - ${{ matrix.name }}
+        working-directory: ${{ matrix.path }}
+        if: always()
+        run: |
+          npm audit --json > audit-report-${{ matrix.name }}.json || true
+          cat audit-report-${{ matrix.name }}.json
+
+      - name: Upload NPM Audit Report
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: npm-audit-report-${{ matrix.name }}
+          path: ${{ matrix.path }}/audit-report-${{ matrix.name }}.json
+          retention-days: 30
+
+  # ====================================================================
+  # SNYK VULNERABILITY SCANNING
+  # ====================================================================
+  snyk-scan:
+    name: Snyk - Open Source Vulnerability Scan
+    runs-on: ubuntu-latest
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Backend
+            path: Application-Code/backend
+          - name: Frontend
+            path: Application-Code/frontend
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: '${{ matrix.path }}/package-lock.json'
+
+      - name: Run Snyk Scan - ${{ matrix.name }}
+        uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high --json-file-output=snyk-report-${{ matrix.name }}.json
+          working-directory: ${{ matrix.path }}
+        continue-on-error: true
+
+      - name: Upload Snyk Report
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: snyk-report-${{ matrix.name }}
+          path: ${{ matrix.path }}/snyk-report-${{ matrix.name }}.json
+          retention-days: 30
+
+  # ====================================================================
+  # OWASP DEPENDENCY-CHECK SCAN
+  # ====================================================================
+  dependency-check:
+    name: OWASP Dependency-Check - CVE Analysis
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Run Dependency-Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          path: 'Application-Code'
+          format: 'JSON'
+          args: >
+            --enablePackageManager
+            --enableNodePackageManager
+            --enableNpmCpeStartsWith
+
+      - name: Upload Dependency-Check Report
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: dependency-check-report
+          path: reports/
+          retention-days: 30
+
+      - name: Publish Dependency-Check Results
+        if: always()
+        run: |
+          echo "## 🔍 OWASP Dependency-Check Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Report generated at: reports/" >> $GITHUB_STEP_SUMMARY
+          if [ -f "reports/dependency-check-report.json" ]; then
+            echo "✅ Dependency-Check analysis complete" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # ====================================================================
+  # REPORT SUMMARY
+  # ====================================================================
+  sca-report-summary:
+    name: SCA Scan Summary
+    runs-on: ubuntu-latest
+    needs: [npm-audit, snyk-scan, dependency-check]
+    if: always()
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v3
+
+      - name: Generate SCA Summary Report
+        run: |
+          echo "# 📊 SCA Scan Summary Report" > sca-summary.md
+          echo "" >> sca-summary.md
+          echo "## Scan Timestamp" >> sca-summary.md
+          echo "$(date)" >> sca-summary.md
+          echo "" >> sca-summary.md
+          
+          echo "## Scan Results" >> sca-summary.md
+          echo "- **NPM Audit**: Scanned backend and frontend dependencies" >> sca-summary.md
+          echo "- **Snyk**: Comprehensive open-source vulnerability detection" >> sca-summary.md
+          echo "- **OWASP Dependency-Check**: CVE analysis and package manager scanning" >> sca-summary.md
+          echo "" >> sca-summary.md
+          
+          echo "## Artifacts Generated" >> sca-summary.md
+          echo "- npm-audit-report-*.json" >> sca-summary.md
+          echo "- snyk-report-*.json" >> sca-summary.md
+          echo "- dependency-check-report.json" >> sca-summary.md
+          echo "" >> sca-summary.md
+          
+          echo "All reports are available in the Actions artifacts." >> sca-summary.md
+          
+          cat sca-summary.md >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload SCA Summary
+        uses: actions/upload-artifact@v3
+        with:
+          name: sca-scan-summary
+          path: sca-summary.md
+          retention-days: 30
+
+  # ====================================================================
+  # FAIL ON CRITICAL VULNERABILITIES (Optional)
+  # ====================================================================
+  fail-on-critical:
+    name: Fail Pipeline on Critical Issues
+    runs-on: ubuntu-latest
+    needs: [npm-audit, snyk-scan, dependency-check]
+    if: failure()
+
+    steps:
+      - name: Report Critical Vulnerabilities
+        run: |
+          echo "❌ CRITICAL: SCA scan detected vulnerabilities!"
+          echo ""
+          echo "Please review the scan reports in the artifacts:"
+          echo "  - npm-audit-report-*.json"
+          echo "  - snyk-report-*.json"
+          echo "  - dependency-check-report.json"
+          echo ""
+          echo "Action required: Fix vulnerabilities before merging."
+          exit 1
