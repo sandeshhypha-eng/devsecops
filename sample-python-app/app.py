@@ -84,3 +84,5 @@ if __name__ == '__main__':
 
  API_KEY =  JFEJHLGEFJG234231HJJBH423423H23
  password = "P@ssw0rd123"efuewhfew
+aws_secret_access_key = "AKIAIOSFODNN7EXAMPLE"
+aws_session_token = "FQoGZXIvYXdzEJr//////////wEaDGVjcnVtZW50YWNlZC9zaWduYXR1cmUvYjA4ZDE3ODg0N2E5YjQyODg0Zjk1ZDUyZDYzN2E2ZDA5NjQvYXdzLXNlc3Npb24vZXhhbXBsZS9hd3Mtc2Vzc2lvbi10b2tlbi9leGFtcGxlLWF3cy1zZXNzaW9uLXRva2VuLTIzNDI"
