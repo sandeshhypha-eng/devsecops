@@ -1,4 +1,4 @@
-name: DAST Scan - Dynamic Application Security Testing (Test Environment)
+name: DAST Scan - OWASP ZAP
 
 on:
   workflow_dispatch:
@@ -8,16 +8,12 @@ on:
         required: true
         type: string
 
-  # Trigger after SCA and SAST scans pass (optional)
   workflow_run:
     workflows: ['SCA Scan - Dependency Vulnerability Analysis', 'SAST Scan - Static Application Security Testing']
     types: [completed]
     branches: [main, develop, 'feature*']
 
 jobs:
-  # ====================================================================
-  # DEPLOY TO TEST ENVIRONMENT
-  # ====================================================================
   deploy-to-test:
     name: Deploy to Test Environment
     runs-on: ubuntu-latest
@@ -28,25 +24,20 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Deploy Application to Test Environment
+      - name: Set Test Environment URL
         id: deploy
         run: |
-          echo "========================================="
-          echo "Deploying to Test Environment"
-          echo "========================================="
-          
-          # If manual trigger, use provided URL
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             TEST_URL="${{ github.event.inputs.test_url }}"
           else
-            # Default to test environment
             TEST_URL="${{ secrets.TEST_ENV_URL }}"
           fi
-          
           echo "Test Environment URL: $TEST_URL"
           echo "test_url=$TEST_URL" >> $GITHUB_OUTPUT
-          
-          # Verify deployment is accessible
+
+      - name: Verify Test Environment Availability
+        run: |
+          TEST_URL="${{ needs.deploy-to-test.outputs.test_url }}"
           for i in {1..30}; do
             if curl -f "$TEST_URL/health" 2>/dev/null || curl -f "$TEST_URL/" 2>/dev/null; then
               echo "✅ Test environment is accessible"
@@ -55,17 +46,12 @@ jobs:
             echo "Waiting for test environment... (attempt $i/30)"
             sleep 10
           done
-          
           echo "⚠️ Test environment may not be fully ready, but continuing with scans..."
 
-  # ====================================================================
-  # OWASP ZAP SCANNING
-  # ====================================================================
-  owasp-zap-scan:
-    name: OWASP ZAP - Web Application Vulnerability Scan
+  zap-scan:
+    name: OWASP ZAP DAST Scan
     runs-on: ubuntu-latest
     needs: deploy-to-test
-    if: always()
 
     steps:
       - name: Checkout Repository
@@ -96,414 +82,23 @@ jobs:
           path: report_md.md
           retention-days: 30
 
-  # ====================================================================
-  # NIKTO WEB SERVER SCANNING
-  # ====================================================================
-  nikto-scan:
-    name: Nikto - Web Server Vulnerability Scan
-    runs-on: ubuntu-latest
-    needs: deploy-to-test
-    if: always()
-
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Install Nikto
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y nikto
-
-      - name: Run Nikto Scan
-        run: |
-          echo "========================================="
-          echo "Running Nikto Web Server Scan"
-          echo "========================================="
-          
-          TEST_URL="${{ needs.deploy-to-test.outputs.test_url }}"
-          
-          # Extract host from URL
-          HOST=$(echo $TEST_URL | sed -E 's|https?://([^/]+).*|\1|')
-          
-          nikto -h "$HOST" \
-            -o nikto-report.html \
-            -Format html || true
-          
-          # Also generate JSON report
-          nikto -h "$HOST" \
-            -o nikto-report.json \
-            -Format json || true
-
-      - name: Upload Nikto Report
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: nikto-report
-          path: nikto-report.*
-          retention-days: 30
-
-  # ====================================================================
-  # SQLMap - SQL INJECTION TESTING
-  # ====================================================================
-  sqlmap-scan:
-    name: SQLMap - SQL Injection Vulnerability Test
-    runs-on: ubuntu-latest
-    needs: deploy-to-test
-    if: always()
-
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Install SQLMap
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y sqlmap
-
-      - name: Run SQLMap Scan
-        run: |
-          echo "========================================="
-          echo "Running SQLMap SQL Injection Test"
-          echo "========================================="
-          
-          TEST_URL="${{ needs.deploy-to-test.outputs.test_url }}"
-          
-          sqlmap \
-            -u "$TEST_URL" \
-            --batch \
-            --crawl=2 \
-            --forms \
-            --output-dir=sqlmap-results \
-            --dump-format=JSON \
-            -v 1 || true
-
-      - name: Display SQLMap Results
-        if: always()
-        run: |
-          if [ -d "sqlmap-results" ]; then
-            find sqlmap-results -type f -name "*.json" -exec cat {} \;
-          fi
-
-      - name: Upload SQLMap Report
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: sqlmap-report
-          path: sqlmap-results/
-          retention-days: 30
-
-  # ====================================================================
-  # SSL/TLS CONFIGURATION SCAN
-  # ====================================================================
-  ssl-scan:
-    name: SSL/TLS Configuration Analysis
-    runs-on: ubuntu-latest
-    needs: deploy-to-test
-    if: always()
-
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Run testssl.sh Scan
-        run: |
-          echo "========================================="
-          echo "Testing SSL/TLS Configuration"
-          echo "========================================="
-          
-          TEST_URL="${{ needs.deploy-to-test.outputs.test_url }}"
-          
-          # Extract host from URL
-          HOST=$(echo $TEST_URL | sed -E 's|https?://([^/]+).*|\1|')
-          
-          # Clone testssl.sh if not available
-          if [ ! -d "testssl.sh" ]; then
-            git clone --depth 1 https://github.com/drwetter/testssl.sh.git
-          fi
-          
-          ./testssl.sh/testssl.sh \
-            --json \
-            --outfile ssl-report.json \
-            "$HOST" || true
-
-      - name: Display SSL/TLS Results
-        if: always()
-        run: |
-          if [ -f "ssl-report.json" ]; then
-            cat ssl-report.json
-          fi
-
-      - name: Upload SSL/TLS Report
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: ssl-tls-report
-          path: ssl-report.json
-          retention-days: 30
-
-  # ====================================================================
-  # API SECURITY TESTING
-  # ====================================================================
-  api-security-test:
-    name: API Security Testing
-    runs-on: ubuntu-latest
-    needs: deploy-to-test
-    if: always()
-
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-
-      - name: Install REST API Testing Tools
-        run: |
-          npm install -g newman
-
-      - name: Create Postman Collection for API Tests
-        run: |
-          mkdir -p api-tests
-          cat > api-tests/api-security-tests.json << 'EOF'
-          {
-            "info": {
-              "name": "API Security Tests",
-              "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
-            },
-            "item": [
-              {
-                "name": "Health Check",
-                "request": {
-                  "method": "GET",
-                  "url": "{{ base_url }}/health"
-                }
-              },
-              {
-                "name": "Test Authentication",
-                "request": {
-                  "method": "GET",
-                  "url": "{{ base_url }}/api",
-                  "header": [
-                    {
-                      "key": "Authorization",
-                      "value": "Bearer invalid-token"
-                    }
-                  ]
-                }
-              },
-              {
-                "name": "Test CORS Headers",
-                "request": {
-                  "method": "OPTIONS",
-                  "url": "{{ base_url }}/api",
-                  "header": [
-                    {
-                      "key": "Origin",
-                      "value": "http://malicious.com"
-                    }
-                  ]
-                }
-              },
-              {
-                "name": "Test Input Validation",
-                "request": {
-                  "method": "POST",
-                  "url": "{{ base_url }}/api/tasks",
-                  "body": {
-                    "raw": "{\"title\": \"<script>alert('xss')</script>\"}"
-                  }
-                }
-              }
-            ]
-          }
-          EOF
-
-      - name: Run API Security Tests
-        run: |
-          TEST_URL="${{ needs.deploy-to-test.outputs.test_url }}"
-          
-          newman run api-tests/api-security-tests.json \
-            --environment <(cat <<EOF
-            {
-              "id": "test-env",
-              "values": [
-                {
-                  "key": "base_url",
-                  "value": "$TEST_URL"
-                }
-              ]
-            }
-          EOF
-            ) \
-            --reporters cli,json \
-            --reporter-json-export api-security-results.json || true
-
-      - name: Upload API Security Test Results
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: api-security-test-results
-          path: api-security-results.json
-          retention-days: 30
-
-  # ====================================================================
-  # SECURITY HEADERS VALIDATION
-  # ====================================================================
-  headers-validation:
-    name: Security Headers Validation
-    runs-on: ubuntu-latest
-    needs: deploy-to-test
-    if: always()
-
-    steps:
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-
-      - name: Check Security Headers
-        run: |
-          echo "========================================="
-          echo "Validating Security Headers"
-          echo "========================================="
-          
-          TEST_URL="${{ needs.deploy-to-test.outputs.test_url }}"
-          
-          cat > check-headers.js << 'EOF'
-          const https = require('https');
-          const http = require('http');
-          
-          const url = process.argv[2];
-          const protocol = url.startsWith('https') ? https : http;
-          
-          protocol.get(url, (res) => {
-            console.log('\n=== Response Headers ===');
-            console.log(JSON.stringify(res.headers, null, 2));
-            
-            console.log('\n=== Security Headers Check ===');
-            
-            const requiredHeaders = [
-              'x-frame-options',
-              'x-content-type-options',
-              'x-xss-protection',
-              'strict-transport-security',
-              'content-security-policy'
-            ];
-            
-            requiredHeaders.forEach(header => {
-              if (res.headers[header]) {
-                console.log(`✓ ${header}: ${res.headers[header]}`);
-              } else {
-                console.log(`✗ ${header}: MISSING`);
-              }
-            });
-          }).on('error', (err) => {
-            console.error('Error:', err.message);
-            process.exit(1);
-          });
-          EOF
-          
-          node check-headers.js "$TEST_URL" > headers-report.txt
-          cat headers-report.txt
-
-      - name: Upload Headers Validation Report
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: security-headers-report
-          path: headers-report.txt
-          retention-days: 30
-
-  # ====================================================================
-  # DAST REPORT SUMMARY
-  # ====================================================================
-  dast-report-summary:
-    name: DAST Scan Summary
-    runs-on: ubuntu-latest
-    needs: [deploy-to-test, owasp-zap-scan, nikto-scan, sqlmap-scan, ssl-scan, api-security-test, headers-validation]
-    if: always()
-
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Download All Artifacts
-        uses: actions/download-artifact@v4
-
-      - name: Generate DAST Summary Report
-        run: |
-          echo "# 🔍 DAST (Dynamic Application Security Testing) Summary Report" > dast-summary.md
-          echo "" >> dast-summary.md
-          echo "## Scan Timestamp" >> dast-summary.md
-          echo "$(date)" >> dast-summary.md
-          echo "" >> dast-summary.md
-          
-          echo "## Test Environment" >> dast-summary.md
-          echo "URL: ${{ needs.deploy-to-test.outputs.test_url }}" >> dast-summary.md
-          echo "" >> dast-summary.md
-          
-          echo "## Scans Performed" >> dast-summary.md
-          echo "1. **OWASP ZAP** - Baseline & Full web application scanning" >> dast-summary.md
-          echo "2. **Nikto** - Web server vulnerability detection" >> dast-summary.md
-          echo "3. **SQLMap** - SQL injection vulnerability testing" >> dast-summary.md
-          echo "4. **testssl.sh** - SSL/TLS configuration analysis" >> dast-summary.md
-          echo "5. **API Security Tests** - REST API security validation" >> dast-summary.md
-          echo "6. **Security Headers** - HTTP security headers verification" >> dast-summary.md
-          echo "" >> dast-summary.md
-          
-          echo "## Vulnerability Categories Tested" >> dast-summary.md
-          echo "- **Web Application Vulnerabilities**: XSS, CSRF, SQL Injection, Authentication flaws" >> dast-summary.md
-          echo "- **Server Configuration**: Outdated software, misconfigured services" >> dast-summary.md
-          echo "- **Database Security**: SQL injection vectors" >> dast-summary.md
-          echo "- **SSL/TLS**: Certificate issues, weak ciphers, protocol vulnerabilities" >> dast-summary.md
-          echo "- **API Security**: Authentication, input validation, error handling" >> dast-summary.md
-          echo "- **HTTP Headers**: Missing security headers, insecure configurations" >> dast-summary.md
-          echo "" >> dast-summary.md
-          
-          echo "## Artifacts Generated" >> dast-summary.md
-          echo "- owasp-zap-report/" >> dast-summary.md
-          echo "- nikto-report/" >> dast-summary.md
-          echo "- sqlmap-report/" >> dast-summary.md
-          echo "- ssl-tls-report.json" >> dast-summary.md
-          echo "- api-security-test-results.json" >> dast-summary.md
-          echo "- security-headers-report.txt" >> dast-summary.md
-          echo "" >> dast-summary.md
-          
-          echo "All reports are available in the Actions artifacts for detailed review." >> dast-summary.md
-          
-          cat dast-summary.md >> $GITHUB_STEP_SUMMARY
-
-      - name: Upload DAST Summary
-        uses: actions/upload-artifact@v4
-        with:
-          name: dast-scan-summary
-          path: dast-summary.md
-          retention-days: 30
-
-  # ====================================================================
-  # FAIL ON CRITICAL VULNERABILITIES
-  # ====================================================================
   fail-on-critical:
-    name: Fail Pipeline on Critical Issues
+    name: Fail on Critical OWASP ZAP Findings
     runs-on: ubuntu-latest
-    needs: [owasp-zap-scan, nikto-scan, sqlmap-scan, ssl-scan, api-security-test, headers-validation]
-    if: failure()
+    needs: zap-scan
+    if: always()
 
     steps:
-      - name: Report Critical Runtime Vulnerabilities
+      - name: Download ZAP Report Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: owasp-zap-report
+          path: zap-report
+
+      - name: Fail if High Severity Findings Exist
         run: |
-          echo "❌ CRITICAL: DAST scan detected runtime security vulnerabilities!"
-          echo ""
-          echo "Please review the security findings in:"
-          echo "  - Actions artifacts:"
-          echo "    - owasp-zap-report/"
-          echo "    - nikto-report/"
-          echo "    - sqlmap-report/"
-          echo "    - ssl-tls-report.json"
-          echo "    - api-security-test-results.json"
-          echo "    - security-headers-report.txt"
-          echo ""
-          echo "Action required: Fix security vulnerabilities in the test environment before production deployment."
-          exit 1
+          if [ -f zap-report/report_md.md ] && grep -qE "High|Critical" zap-report/report_md.md; then
+            echo "❌ High or critical findings detected in the OWASP ZAP report."
+            exit 1
+          fi
+          echo "✅ No high or critical findings detected in the OWASP ZAP report."

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="120" viewBox="0 0 200 120">
+  <rect width="100%" height="100%" fill="#f3f4f6"/>
+  <g transform="translate(12,10)">
+    <rect x="0" y="0" width="176" height="100" rx="6" fill="#e5e7eb" />
+    <circle cx="36" cy="50" r="24" fill="#d1d5db" />
+    <rect x="76" y="28" width="88" height="44" rx="4" fill="#c7f9cc" />
+    <text x="120" y="56" font-size="18" font-family="Arial, Helvetica, sans-serif" fill="#374151" text-anchor="middle">IMG</text>
+  </g>
+</svg>
